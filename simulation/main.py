@@ -28,6 +28,10 @@ from simulation.simulation_engine import (
     SimulationEngine
 )
 
+from simulation.collision_manager import (
+    CollisionManager
+)
+
 
 def main():
 
@@ -60,11 +64,15 @@ def main():
         (21, 13)
     ]
 
-    for i in range(5):
+    for robot_id in range(
+        1,
+        6
+    ):
 
         robot = (
-            robot_manager.get_robot(
-                i + 1
+            robot_manager
+            .get_robot(
+                robot_id
             )
         )
 
@@ -73,7 +81,11 @@ def main():
             robot.position.y
         )
 
-        goal = goals[i]
+        goal = (
+            goals[
+                robot_id - 1
+            ]
+        )
 
         path = (
             pathfinder.find_path(
@@ -83,30 +95,18 @@ def main():
         )
 
         robot_manager.assign_path(
-            robot.id,
+            robot_id,
             path
         )
 
-        print(
-            f"\nRobot {robot.id}"
-        )
-
-        print(
-            f"Start: {start}"
-        )
-
-        print(
-            f"Goal : {goal}"
-        )
-
-        print(
-            f"Path Length: "
-            f"{len(path)}"
-        )
+    collision_manager = (
+        CollisionManager()
+    )
 
     simulation = (
         SimulationEngine(
-            robot_manager
+            robot_manager,
+            collision_manager
         )
     )
 
