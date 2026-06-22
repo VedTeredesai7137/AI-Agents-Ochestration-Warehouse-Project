@@ -26,6 +26,10 @@ class RobotStatus(str, Enum):
 
     CHARGING = "CHARGING"
 
+    NEEDS_CHARGE = (
+        "NEEDS_CHARGE"
+    )
+
 
 class Robot(BaseModel):
 
@@ -51,8 +55,11 @@ class Robot(BaseModel):
             f"position="
             f"({self.position.x},"
             f"{self.position.y}), "
-            f"battery={self.battery:.1f}, "
-            f"task={self.current_task}, "
-            f"status={self.status.value}"
+            f"battery="
+            f"{self.battery:.1f}, "
+            f"task="
+            f"{self.current_task}, "
+            f"status="
+            f"{self.status.value}"
             f")"
         )

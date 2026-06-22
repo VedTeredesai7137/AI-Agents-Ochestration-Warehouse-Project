@@ -35,13 +35,11 @@ class AuctionManager:
             robot.battery
         ) * 0.1
 
-        bid = (
+        return (
             distance
             +
             battery_penalty
         )
-
-        return bid
 
     def run_auction(
         self,
@@ -61,6 +59,12 @@ class AuctionManager:
             if (
                 robot.current_task
                 is not None
+            ):
+                continue
+
+            if (
+                robot.battery
+                < 30
             ):
                 continue
 
@@ -86,7 +90,6 @@ class AuctionManager:
             )
 
         if not bids:
-
             return None
 
         bids.sort()
