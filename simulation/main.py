@@ -36,6 +36,10 @@ from simulation.simulation_engine import (
     SimulationEngine
 )
 
+from simulation.auction_manager import (
+    AuctionManager
+)
+
 
 def main():
 
@@ -76,11 +80,17 @@ def main():
         7
     )
 
-    print(
-        "\nTASKS CREATED\n"
+    task_manager.create_task(
+        4,
+        25,
+        10
     )
 
-    task_manager.display_tasks()
+    task_manager.create_task(
+        5,
+        27,
+        13
+    )
 
     pathfinder = (
         AStarPathfinder(
@@ -88,21 +98,34 @@ def main():
         )
     )
 
-    unassigned_tasks = (
-        task_manager
-        .get_unassigned_tasks()
+    auction_manager = (
+        AuctionManager(
+            robot_manager
+        )
     )
 
-    for index, task in enumerate(
-        unassigned_tasks
+    print(
+        "\nAUCTION PHASE\n"
+    )
+
+    for task in (
+        task_manager.tasks
     ):
 
-        robot_id = index + 1
+        winner_id = (
+            auction_manager
+            .run_auction(
+                task
+            )
+        )
+
+        if winner_id is None:
+            continue
 
         robot = (
             robot_manager
             .get_robot(
-                robot_id
+                winner_id
             )
         )
 
@@ -125,19 +148,13 @@ def main():
 
         task_manager.assign_task(
             task.id,
-            robot_id
+            winner_id
         )
 
         robot_manager.assign_task(
-            robot_id,
+            winner_id,
             task.id,
             path
-        )
-
-        print(
-            f"\nRobot {robot_id}"
-            f" assigned "
-            f"Task {task.id}"
         )
 
     collision_manager = (
@@ -159,7 +176,7 @@ def main():
         simulation.step()
 
     print(
-        "\nALL TASKS REACHED"
+        "\nSIMULATION COMPLETE"
     )
 
 
