@@ -1,17 +1,31 @@
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = (
+    Path(__file__)
+    .parent
+    .parent
+)
 
 sys.path.insert(
     0,
     str(PROJECT_ROOT)
 )
 
-from simulation.warehouse import Warehouse
-from simulation.robot_manager import RobotManager
+from simulation.warehouse import (
+    Warehouse
+)
+
+from simulation.robot_manager import (
+    RobotManager
+)
+
 from simulation.pathfinder import (
     AStarPathfinder
+)
+
+from simulation.simulation_engine import (
+    SimulationEngine
 )
 
 
@@ -38,48 +52,73 @@ def main():
         )
     )
 
-    start = (1, 18)
+    goals = [
+        (25, 1),
+        (24, 4),
+        (23, 7),
+        (22, 10),
+        (21, 13)
+    ]
 
-    goal = (25, 1)
-
-    path = (
-        pathfinder.find_path(
-            start,
-            goal
-        )
-    )
-
-    print(
-        "\nPATH FOUND:\n"
-    )
-
-    print(path)
-
-    robot_manager.assign_path(
-        1,
-        path
-    )
-
-    print(
-        "\nROBOT MOVEMENT:\n"
-    )
-
-    while True:
+    for i in range(5):
 
         robot = (
             robot_manager.get_robot(
-                1
+                i + 1
             )
         )
 
-        print(robot)
-
-        if len(robot.path) <= 1:
-            break
-
-        robot_manager.move_robot_one_step(
-            1
+        start = (
+            robot.position.x,
+            robot.position.y
         )
+
+        goal = goals[i]
+
+        path = (
+            pathfinder.find_path(
+                start,
+                goal
+            )
+        )
+
+        robot_manager.assign_path(
+            robot.id,
+            path
+        )
+
+        print(
+            f"\nRobot {robot.id}"
+        )
+
+        print(
+            f"Start: {start}"
+        )
+
+        print(
+            f"Goal : {goal}"
+        )
+
+        print(
+            f"Path Length: "
+            f"{len(path)}"
+        )
+
+    simulation = (
+        SimulationEngine(
+            robot_manager
+        )
+    )
+
+    while (
+        not simulation.is_complete()
+    ):
+
+        simulation.step()
+
+    print(
+        "\nSimulation Complete"
+    )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
-from simulation.models import Robot
-from simulation.models import Position
-from simulation.models import RobotStatus
+from simulation.models import (
+    Robot,
+    Position,
+    RobotStatus
+)
 
 
 class RobotManager:
@@ -45,7 +47,10 @@ class RobotManager:
                 warehouse.width
             ):
 
-                if warehouse.grid[y][x] == "R":
+                if (
+                    warehouse.grid[y][x]
+                    == "R"
+                ):
 
                     self.create_robot(
                         robot_id,
@@ -57,7 +62,9 @@ class RobotManager:
 
     def display_robots(self):
 
-        for robot in self.robots:
+        for robot in (
+            self.robots
+        ):
 
             print(robot)
 
@@ -66,9 +73,14 @@ class RobotManager:
         robot_id
     ):
 
-        for robot in self.robots:
+        for robot in (
+            self.robots
+        ):
 
-            if robot.id == robot_id:
+            if (
+                robot.id
+                == robot_id
+            ):
 
                 return robot
 
@@ -90,42 +102,4 @@ class RobotManager:
 
             robot.status = (
                 RobotStatus.MOVING
-            )
-
-    def move_robot_one_step(
-        self,
-        robot_id
-    ):
-
-        robot = self.get_robot(
-            robot_id
-        )
-
-        if (
-            robot is None
-            or
-            len(robot.path) <= 1
-        ):
-            return
-
-        next_position = (
-            robot.path[1]
-        )
-
-        robot.position.x = (
-            next_position[0]
-        )
-
-        robot.position.y = (
-            next_position[1]
-        )
-
-        robot.path.pop(0)
-
-        robot.battery -= 1
-
-        if len(robot.path) == 1:
-
-            robot.status = (
-                RobotStatus.IDLE
             )
