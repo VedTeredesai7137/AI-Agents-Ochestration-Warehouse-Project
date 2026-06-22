@@ -2,9 +2,11 @@ from simulation.models import Robot
 from simulation.models import Position
 from simulation.models import RobotStatus
 
+
 class RobotManager:
 
     def __init__(self):
+
         self.robots = []
 
     def create_robot(
@@ -13,6 +15,7 @@ class RobotManager:
         x,
         y
     ):
+
         robot = Robot(
             id=robot_id,
             battery=100.0,
@@ -23,17 +26,24 @@ class RobotManager:
             status=RobotStatus.IDLE
         )
 
-        self.robots.append(robot)
+        self.robots.append(
+            robot
+        )
 
     def spawn_from_warehouse(
         self,
         warehouse
     ):
+
         robot_id = 1
 
-        for y in range(warehouse.height):
+        for y in range(
+            warehouse.height
+        ):
 
-            for x in range(warehouse.width):
+            for x in range(
+                warehouse.width
+            ):
 
                 if warehouse.grid[y][x] == "R":
 
@@ -64,7 +74,25 @@ class RobotManager:
 
         return None
 
-    def move_robot_right(
+    def assign_path(
+        self,
+        robot_id,
+        path
+    ):
+
+        robot = self.get_robot(
+            robot_id
+        )
+
+        if robot:
+
+            robot.path = path
+
+            robot.status = (
+                RobotStatus.MOVING
+            )
+
+    def move_robot_one_step(
         self,
         robot_id
     ):
@@ -73,11 +101,31 @@ class RobotManager:
             robot_id
         )
 
-        if robot is None:
+        if (
+            robot is None
+            or
+            len(robot.path) <= 1
+        ):
             return
 
-        robot.position.x += 1
+        next_position = (
+            robot.path[1]
+        )
+
+        robot.position.x = (
+            next_position[0]
+        )
+
+        robot.position.y = (
+            next_position[1]
+        )
+
+        robot.path.pop(0)
 
         robot.battery -= 1
 
-        robot.status = RobotStatus.MOVING
+        if len(robot.path) == 1:
+
+            robot.status = (
+                RobotStatus.IDLE
+            )

@@ -1,5 +1,4 @@
 from enum import Enum
-
 from pydantic import BaseModel
 
 
@@ -22,7 +21,10 @@ class Robot(BaseModel):
     position: Position
     status: RobotStatus
 
+    path: list = []
+
     def __str__(self):
+
         return (
             f"Robot("
             f"id={self.id}, "

@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
 sys.path.insert(
     0,
     str(PROJECT_ROOT)
@@ -9,6 +10,9 @@ sys.path.insert(
 
 from simulation.warehouse import Warehouse
 from simulation.robot_manager import RobotManager
+from simulation.pathfinder import (
+    AStarPathfinder
+)
 
 
 def main():
@@ -20,31 +24,62 @@ def main():
 
     warehouse.generate()
 
-    print(
-        "\nWarehouse initialized\n"
+    robot_manager = (
+        RobotManager()
     )
-
-    robot_manager = RobotManager()
 
     robot_manager.spawn_from_warehouse(
         warehouse
     )
 
+    pathfinder = (
+        AStarPathfinder(
+            warehouse
+        )
+    )
+
+    start = (1, 18)
+
+    goal = (25, 1)
+
+    path = (
+        pathfinder.find_path(
+            start,
+            goal
+        )
+    )
+
     print(
-        "Robots Spawned:\n"
+        "\nPATH FOUND:\n"
     )
 
-    robot_manager.display_robots()
+    print(path)
+
+    robot_manager.assign_path(
+        1,
+        path
+    )
 
     print(
-        "\nMoving Robot 1...\n"
+        "\nROBOT MOVEMENT:\n"
     )
 
-    robot_manager.move_robot_right(
-        1
-    )
+    while True:
 
-    robot_manager.display_robots()
+        robot = (
+            robot_manager.get_robot(
+                1
+            )
+        )
+
+        print(robot)
+
+        if len(robot.path) <= 1:
+            break
+
+        robot_manager.move_robot_one_step(
+            1
+        )
 
 
 if __name__ == "__main__":
