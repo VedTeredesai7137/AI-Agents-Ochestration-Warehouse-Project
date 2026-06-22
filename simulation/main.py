@@ -24,12 +24,16 @@ from simulation.pathfinder import (
     AStarPathfinder
 )
 
-from simulation.simulation_engine import (
-    SimulationEngine
+from simulation.task_manager import (
+    TaskManager
 )
 
 from simulation.collision_manager import (
     CollisionManager
+)
+
+from simulation.simulation_engine import (
+    SimulationEngine
 )
 
 
@@ -50,24 +54,50 @@ def main():
         warehouse
     )
 
+    task_manager = (
+        TaskManager()
+    )
+
+    task_manager.create_task(
+        1,
+        10,
+        1
+    )
+
+    task_manager.create_task(
+        2,
+        15,
+        4
+    )
+
+    task_manager.create_task(
+        3,
+        20,
+        7
+    )
+
+    print(
+        "\nTASKS CREATED\n"
+    )
+
+    task_manager.display_tasks()
+
     pathfinder = (
         AStarPathfinder(
             warehouse
         )
     )
 
-    goals = [
-        (25, 1),
-        (24, 4),
-        (23, 7),
-        (22, 10),
-        (21, 13)
-    ]
+    unassigned_tasks = (
+        task_manager
+        .get_unassigned_tasks()
+    )
 
-    for robot_id in range(
-        1,
-        6
+    for index, task in enumerate(
+        unassigned_tasks
     ):
+
+        robot_id = index + 1
 
         robot = (
             robot_manager
@@ -82,9 +112,8 @@ def main():
         )
 
         goal = (
-            goals[
-                robot_id - 1
-            ]
+            task.pickup_x,
+            task.pickup_y
         )
 
         path = (
@@ -94,9 +123,21 @@ def main():
             )
         )
 
-        robot_manager.assign_path(
+        task_manager.assign_task(
+            task.id,
+            robot_id
+        )
+
+        robot_manager.assign_task(
             robot_id,
+            task.id,
             path
+        )
+
+        print(
+            f"\nRobot {robot_id}"
+            f" assigned "
+            f"Task {task.id}"
         )
 
     collision_manager = (
@@ -106,7 +147,8 @@ def main():
     simulation = (
         SimulationEngine(
             robot_manager,
-            collision_manager
+            collision_manager,
+            task_manager
         )
     )
 
@@ -117,7 +159,7 @@ def main():
         simulation.step()
 
     print(
-        "\nSimulation Complete"
+        "\nALL TASKS REACHED"
     )
 
 

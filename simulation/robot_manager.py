@@ -60,35 +60,29 @@ class RobotManager:
 
                     robot_id += 1
 
-    def display_robots(self):
-
-        for robot in (
-            self.robots
-        ):
-
-            print(robot)
-
     def get_robot(
         self,
         robot_id
     ):
 
-        for robot in (
-            self.robots
-        ):
+        for robot in self.robots:
 
-            if (
-                robot.id
-                == robot_id
-            ):
+            if robot.id == robot_id:
 
                 return robot
 
         return None
 
-    def assign_path(
+    def display_robots(self):
+
+        for robot in self.robots:
+
+            print(robot)
+
+    def assign_task(
         self,
         robot_id,
+        task_id,
         path
     ):
 
@@ -96,10 +90,15 @@ class RobotManager:
             robot_id
         )
 
-        if robot:
+        if robot is None:
+            return
 
-            robot.path = path
+        robot.current_task = (
+            task_id
+        )
 
-            robot.status = (
-                RobotStatus.MOVING
-            )
+        robot.path = path
+
+        robot.status = (
+            RobotStatus.MOVING
+        )

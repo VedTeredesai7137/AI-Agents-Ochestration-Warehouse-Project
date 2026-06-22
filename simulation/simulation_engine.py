@@ -8,7 +8,8 @@ class SimulationEngine:
     def __init__(
         self,
         robot_manager,
-        collision_manager
+        collision_manager,
+        task_manager
     ):
 
         self.robot_manager = (
@@ -19,6 +20,10 @@ class SimulationEngine:
             collision_manager
         )
 
+        self.task_manager = (
+            task_manager
+        )
+
         self.current_step = 0
 
     def step(self):
@@ -26,15 +31,8 @@ class SimulationEngine:
         self.current_step += 1
 
         print(
-            f"\n{'=' * 40}"
-        )
-
-        print(
-            f"STEP {self.current_step}"
-        )
-
-        print(
-            f"{'=' * 40}\n"
+            f"\nSTEP "
+            f"{self.current_step}\n"
         )
 
         self.collision_manager.reset_step()
@@ -46,50 +44,39 @@ class SimulationEngine:
             if len(robot.path) <= 1:
                 continue
 
-            next_position = (
-                robot.path[1]
+            next_x = (
+                robot.path[1][0]
             )
 
-            next_x = next_position[0]
-            next_y = next_position[1]
+            next_y = (
+                robot.path[1][1]
+            )
 
-            can_move = (
+            if not (
                 self.collision_manager
                 .reserve_cell(
                     next_x,
                     next_y
                 )
-            )
-
-            if not can_move:
+            ):
 
                 robot.status = (
                     RobotStatus.WAITING
                 )
 
-                print(
-                    f"Robot {robot.id}"
-                    f" WAITING"
-                )
-
-                print(
-                    f"Target Cell "
-                    f"({next_x},{next_y}) "
-                    f"already reserved\n"
-                )
-
                 continue
 
-            robot.position.x = next_x
-            robot.position.y = next_y
+            robot.position.x = (
+                next_x
+            )
+
+            robot.position.y = (
+                next_y
+            )
 
             robot.path.pop(0)
 
             robot.battery -= 1
-
-            robot.status = (
-                RobotStatus.MOVING
-            )
 
             print(
                 f"Robot {robot.id}"
@@ -97,7 +84,18 @@ class SimulationEngine:
                 f"({next_x},{next_y})"
             )
 
-        print()
+            if len(robot.path) == 1:
+
+                robot.status = (
+                    RobotStatus.PICKING
+                )
+
+                print(
+                    f"Robot "
+                    f"{robot.id}"
+                    f" reached Task "
+                    f"{robot.current_task}"
+                )
 
     def is_complete(self):
 
