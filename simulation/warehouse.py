@@ -75,3 +75,20 @@ class Warehouse:
                 neighbors.append((nx, ny))
 
         return neighbors
+
+
+    def get_spawn_locations(self):
+
+        locations = []
+
+        for y in range(self.height):
+
+            for x in range(self.width):
+
+                if self.grid[y][x] == "R":
+
+                    locations.append(
+                        (x, y)
+                    )
+
+        return locations
