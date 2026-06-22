@@ -48,10 +48,6 @@ class AuctionManager:
 
         bids = []
 
-        print(
-            f"\nTASK {task.id}"
-        )
-
         for robot in (
             self.robot_manager.robots
         ):
@@ -82,26 +78,9 @@ class AuctionManager:
                 )
             )
 
-            print(
-                f"Robot "
-                f"{robot.id}"
-                f" bid = "
-                f"{bid:.2f}"
-            )
-
         if not bids:
             return None
 
         bids.sort()
 
-        winner_id = (
-            bids[0][1]
-        )
-
-        print(
-            f"WINNER -> "
-            f"Robot "
-            f"{winner_id}"
-        )
-
-        return winner_id
+        return bids[0][1]

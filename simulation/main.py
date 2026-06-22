@@ -9,9 +9,9 @@ from simulation.robot_manager import RobotManager
 from simulation.pathfinder import AStarPathfinder
 from simulation.task_manager import TaskManager
 from simulation.collision_manager import CollisionManager
-from simulation.simulation_engine import SimulationEngine
 from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
+from simulation.simulation_engine import SimulationEngine
 
 
 def main():
@@ -20,76 +20,93 @@ def main():
     warehouse.generate()
 
     robot_manager = RobotManager()
-    robot_manager.spawn_from_warehouse(warehouse)
-
-    # Day 9 Battery Testing
-    for robot in robot_manager.robots:
-        robot.battery = 100
+    robot_manager.spawn_from_warehouse(
+        warehouse
+    )
 
     task_manager = TaskManager()
 
-    task_manager.create_task(1, 10, 1)
-    task_manager.create_task(2, 15, 4)
-    task_manager.create_task(3, 20, 7)
-    task_manager.create_task(4, 25, 10)
-    task_manager.create_task(5, 27, 13)
+    task_manager.create_task(10, 1)
+    task_manager.create_task(15, 4)
+    task_manager.create_task(20, 7)
+    task_manager.create_task(25, 10)
+    task_manager.create_task(27, 13)
 
-    pathfinder = AStarPathfinder(warehouse)
-
-    auction_manager = AuctionManager(robot_manager)
-
-    print("\nAUCTION PHASE\n")
-
-    for task in task_manager.tasks:
-
-        winner_id = auction_manager.run_auction(task)
-
-        if winner_id is None:
-            continue
-
-        robot = robot_manager.get_robot(winner_id)
-
-        start = (
-            robot.position.x,
-            robot.position.y
-        )
-
-        goal = (
-            task.pickup_x,
-            task.pickup_y
-        )
-
-        path = pathfinder.find_path(
-            start,
-            goal
-        )
-
-        task_manager.assign_task(
-            task.id,
-            winner_id
-        )
-
-        robot_manager.assign_task(
-            winner_id,
-            task.id,
-            path
-        )
-
-    collision_manager = CollisionManager()
-    charging_manager = ChargingManager()
-
-    simulation = SimulationEngine(
-        robot_manager,
-        collision_manager,
-        task_manager,
-        charging_manager,
-        pathfinder
+    pathfinder = AStarPathfinder(
+        warehouse
     )
 
-    while not simulation.is_complete():
+    collision_manager = (
+        CollisionManager()
+    )
+
+    charging_manager = (
+        ChargingManager()
+    )
+
+    auction_manager = (
+        AuctionManager(
+            robot_manager
+        )
+    )
+
+    simulation = (
+        SimulationEngine(
+            robot_manager,
+            collision_manager,
+            task_manager,
+            charging_manager,
+            pathfinder,
+            auction_manager
+        )
+    )
+    print( f"Robots: {len(robot_manager.robots)}" )
+    print( f"Tasks: {len(task_manager.tasks)}" )
+    print( f"Pathfinder: {pathfinder}" )
+    print( f"Collision Manager: {collision_manager}" )
+    print( f"Charging Manager: {charging_manager}" )
+    print( f"Auction Manager: {auction_manager}" )
+
+    while (
+        not simulation.is_complete()
+    ):
+
         simulation.step()
 
-    print("\nSIMULATION COMPLETE")
+        if (
+            simulation.current_step
+            == 10
+        ):
+
+            task_manager.create_task(
+                5,
+                6
+            )
+
+        if (
+            simulation.current_step
+            == 20
+        ):
+
+            task_manager.create_task(
+                18,
+                15
+            )
+        if simulation.current_step % 50 == 0:
+
+            print("\nDEBUG")
+
+            for task in task_manager.tasks:
+
+                print(
+                    task.id,
+            task.assigned_robot,
+            task.completed
+        )
+
+    print(
+        "\nSIMULATION COMPLETE"
+    )
 
 
 if __name__ == "__main__":
