@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warehouse Swarm Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d27;
+            --bg-card: #21242f;
+            --bg-cell: #2a2e3b;
+            --border: #2e3345;
+            --text-primary: #e8eaf0;
+            --text-secondary: #8b90a0;
+            --text-muted: #5c6070;
+            --accent-blue: #4a90e2;
+            --accent-orange: #e8913a;
+            --accent-green: #3dd68c;
+            --accent-yellow: #f0c850;
+            --accent-red: #e05555;
+            --shelf-color: #3a3550;
+            --spawn-color: #2a3a45;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ---- Header ---- */
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 28px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }
+
+        .header h1 span {
+            color: var(--accent-blue);
+        }
+
+        .header-badge {
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: var(--bg-cell);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        /* ---- Layout ---- */
+
+        .layout {
+            display: flex;
+            gap: 20px;
+            padding: 20px 28px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .main {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* ---- Cards ---- */
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+        }
+
+        .card-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+
+        /* ---- Status Panel ---- */
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .stat-value {
+            font-size: 14px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .stat-value.running {
+            color: var(--accent-green);
+        }
+
+        .stat-value.paused {
+            color: var(--accent-orange);
+        }
+
+        .stat-value.complete {
+            color: var(--accent-blue);
+        }
+
+        /* ---- Control Panel ---- */
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 10px 0;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-transform: uppercase;
+        }
+
+        .btn:active {
+            transform: scale(0.96);
+        }
+
+        .btn-start {
+            background: #1a3a28;
+            color: var(--accent-green);
+            border-color: #264a35;
+        }
+
+        .btn-start:hover {
+            background: #224832;
+        }
+
+        .btn-pause {
+            background: #3a2a18;
+            color: var(--accent-orange);
+            border-color: #4a3520;
+        }
+
+        .btn-pause:hover {
+            background: #483218;
+        }
+
+        .btn-step {
+            background: #1a2a40;
+            color: var(--accent-blue);
+            border-color: #253a55;
+        }
+
+        .btn-step:hover {
+            background: #203550;
+        }
+
+        .btn-reset {
+            background: #3a1a1a;
+            color: var(--accent-red);
+            border-color: #4a2525;
+        }
+
+        .btn-reset:hover {
+            background: #452020;
+        }
+
+        /* ---- Legend ---- */
+
+        .legend-items {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .legend-swatch {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        /* ---- Grid ---- */
+
+        .grid-wrapper {
+            overflow: auto;
+        }
+
+        .grid-container {
+            display: inline-grid;
+            gap: 2px;
+            padding: 4px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .cell {
+            width: 34px;
+            height: 34px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: 600;
+            position: relative;
+            transition: background 0.2s ease;
+        }
+
+        .cell-aisle {
+            background: var(--bg-cell);
+        }
+
+        .cell-shelf {
+            background: var(--shelf-color);
+            border: 1px solid #4a4565;
+        }
+
+        .cell-charger {
+            background: #3a3520;
+            border: 1px solid #504a28;
+        }
+
+        .cell-spawn {
+            background: var(--spawn-color);
+        }
+
+        .cell-robot {
+            background: var(--accent-blue);
+            color: #fff;
+            flex-direction: column;
+            gap: 1px;
+            font-size: 7px;
+            line-height: 1.1;
+            box-shadow: 0 0 8px rgba(74, 144, 226, 0.4);
+            z-index: 10;
+            animation: robotPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes robotPulse {
+            0%, 100% { box-shadow: 0 0 6px rgba(74, 144, 226, 0.3); }
+            50% { box-shadow: 0 0 14px rgba(74, 144, 226, 0.6); }
+        }
+
+        .cell-robot .robot-id {
+            font-size: 9px;
+            font-weight: 700;
+        }
+
+        .cell-robot .robot-batt {
+            font-size: 7px;
+            opacity: 0.85;
+        }
+
+        .cell-robot.delivering {
+            background: #3a7ad6;
+        }
+
+        .cell-robot.charging {
+            background: #c0a030;
+            box-shadow: 0 0 8px rgba(240, 200, 80, 0.4);
+            animation: chargePulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes chargePulse {
+            0%, 100% { box-shadow: 0 0 6px rgba(240, 200, 80, 0.3); }
+            50% { box-shadow: 0 0 14px rgba(240, 200, 80, 0.7); }
+        }
+
+        .cell-pickup {
+            background: var(--accent-orange);
+            color: #fff;
+            font-size: 8px;
+            font-weight: 700;
+            box-shadow: 0 0 6px rgba(232, 145, 58, 0.3);
+        }
+
+        .cell-delivery {
+            background: var(--accent-green);
+            color: #0f1117;
+            font-size: 8px;
+            font-weight: 700;
+            box-shadow: 0 0 6px rgba(61, 214, 140, 0.3);
+        }
+
+        .cell-charger-icon {
+            color: var(--accent-yellow);
+            font-size: 14px;
+        }
+
+        /* ---- Robot List ---- */
+
+        .robot-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .robot-entry {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            background: var(--bg-cell);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        .robot-entry-id {
+            font-weight: 700;
+            color: var(--accent-blue);
+            width: 28px;
+        }
+
+        .robot-entry-status {
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-idle {
+            background: #1a2a40;
+            color: var(--text-secondary);
+        }
+
+        .status-moving {
+            background: #1a3a28;
+            color: var(--accent-green);
+        }
+
+        .status-charging {
+            background: #3a3520;
+            color: var(--accent-yellow);
+        }
+
+        .status-delivering {
+            background: #2a2050;
+            color: #a080e0;
+        }
+
+        .battery-bar {
+            flex: 1;
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .battery-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease, background 0.3s ease;
+        }
+
+        .battery-text {
+            font-size: 11px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            width: 36px;
+            text-align: right;
+            color: var(--text-secondary);
+        }
+
+        /* ---- Responsive ---- */
+
+        @media (max-width: 1100px) {
+            .layout {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                flex-direction: row;
+                flex-wrap: wrap;
+            }
+
+            .sidebar .card {
+                flex: 1;
+                min-width: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1><span>⬡</span> Warehouse Swarm <span>Dashboard</span></h1>
+        <div class="header-badge" id="connection-badge">● Connected</div>
+    </div>
+
+    <div class="layout">
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+
+            <!-- Status -->
+            <div class="card">
+                <div class="card-title">Simulation Status</div>
+                <div class="stat-row">
+                    <span class="stat-label">Step</span>
+                    <span class="stat-value" id="stat-step">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Active Robots</span>
+                    <span class="stat-value" id="stat-active">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Total Tasks</span>
+                    <span class="stat-value" id="stat-total-tasks">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Unfinished</span>
+                    <span class="stat-value" id="stat-unfinished">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Running</span>
+                    <span class="stat-value paused" id="stat-running">PAUSED</span>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="card">
+                <div class="card-title">Controls</div>
+                <div class="controls">
+                    <button class="btn btn-start" onclick="apiPost('/simulation/start')">▶ Start</button>
+                    <button class="btn btn-pause" onclick="apiPost('/simulation/pause')">⏸ Pause</button>
+                    <button class="btn btn-step" onclick="apiPost('/simulation/step')">⏭ Step</button>
+                    <button class="btn btn-reset" onclick="apiPost('/simulation/reset')">↺ Reset</button>
+                </div>
+            </div>
+
+            <!-- Legend -->
+            <div class="card">
+                <div class="card-title">Legend</div>
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--accent-blue);"></div>
+                        Robot
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--accent-orange);"></div>
+                        Task Pickup
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--accent-green);"></div>
+                        Task Delivery
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--accent-yellow);"></div>
+                        Charging Station
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--shelf-color); border: 1px solid #4a4565;"></div>
+                        Shelf
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-swatch" style="background: var(--bg-cell);"></div>
+                        Aisle
+                    </div>
+                </div>
+            </div>
+
+            <!-- Robots List -->
+            <div class="card">
+                <div class="card-title">Robot Fleet</div>
+                <div class="robot-list" id="robot-list"></div>
+            </div>
+
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main">
+            <div class="card">
+                <div class="card-title">Warehouse Grid (30 × 20)</div>
+                <div class="grid-wrapper">
+                    <div class="grid-container" id="grid"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // ---- State ----
+
+        let gridData = null;
+        let gridWidth = 30;
+        let gridHeight = 20;
+        let cells = [];
+
+        // ---- Init ----
+
+        async function init() {
+            await fetchGrid();
+            buildGrid();
+            poll();
+            setInterval(poll, 200);
+        }
+
+        // ---- Fetch warehouse grid (once) ----
+
+        async function fetchGrid() {
+            try {
+                const res = await fetch('/warehouse/grid');
+                const data = await res.json();
+                gridData = data.grid;
+                gridWidth = data.width;
+                gridHeight = data.height;
+            } catch (e) {
+                console.error('Failed to fetch grid:', e);
+            }
+        }
+
+        // ---- Build grid DOM ----
+
+        function buildGrid() {
+            const container = document.getElementById('grid');
+            container.style.gridTemplateColumns = `repeat(${gridWidth}, 34px)`;
+            container.innerHTML = '';
+            cells = [];
+
+            for (let y = 0; y < gridHeight; y++) {
+                const row = [];
+                for (let x = 0; x < gridWidth; x++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.dataset.x = x;
+                    cell.dataset.y = y;
+                    container.appendChild(cell);
+                    row.push(cell);
+                }
+                cells.push(row);
+            }
+        }
+
+        // ---- Poll API ----
+
+        async function poll() {
+            try {
+                const [robotsRes, tasksRes, statusRes] = await Promise.all([
+                    fetch('/robots'),
+                    fetch('/tasks'),
+                    fetch('/simulation/status')
+                ]);
+
+                const robots = await robotsRes.json();
+                const tasks = await tasksRes.json();
+                const status = await statusRes.json();
+
+                updateGrid(robots, tasks);
+                updateStatus(status);
+                updateRobotList(robots);
+
+                document.getElementById('connection-badge').textContent = '● Connected';
+                document.getElementById('connection-badge').style.color = 'var(--accent-green)';
+            } catch (e) {
+                document.getElementById('connection-badge').textContent = '● Disconnected';
+                document.getElementById('connection-badge').style.color = 'var(--accent-red)';
+            }
+        }
+
+        // ---- Update Grid ----
+
+        function updateGrid(robots, tasks) {
+            if (!gridData) return;
+
+            // Reset all cells to base
+            for (let y = 0; y < gridHeight; y++) {
+                for (let x = 0; x < gridWidth; x++) {
+                    const cell = cells[y][x];
+                    const tile = gridData[y][x];
+
+                    cell.className = 'cell';
+                    cell.innerHTML = '';
+
+                    if (tile === 'S') {
+                        cell.classList.add('cell-shelf');
+                    } else if (tile === 'C') {
+                        cell.classList.add('cell-charger');
+                        cell.innerHTML = '<span class="cell-charger-icon">⚡</span>';
+                    } else if (tile === 'R') {
+                        cell.classList.add('cell-spawn');
+                    } else {
+                        cell.classList.add('cell-aisle');
+                    }
+                }
+            }
+
+            // Draw task pickups (incomplete only)
+            for (const task of tasks) {
+                if (task.completed) continue;
+
+                // Delivery
+                const dx = task.delivery_x;
+                const dy = task.delivery_y;
+                if (dy >= 0 && dy < gridHeight && dx >= 0 && dx < gridWidth) {
+                    const dc = cells[dy][dx];
+                    dc.className = 'cell cell-delivery';
+                    dc.innerHTML = `D${task.id}`;
+                }
+
+                // Pickup (drawn after delivery so it takes priority on overlap)
+                const px = task.pickup_x;
+                const py = task.pickup_y;
+                if (py >= 0 && py < gridHeight && px >= 0 && px < gridWidth) {
+                    const pc = cells[py][px];
+                    pc.className = 'cell cell-pickup';
+                    pc.innerHTML = `T${task.id}`;
+                }
+            }
+
+            // Draw robots (drawn last so they are always visible)
+            for (const robot of robots) {
+                const rx = robot.position.x;
+                const ry = robot.position.y;
+                if (ry >= 0 && ry < gridHeight && rx >= 0 && rx < gridWidth) {
+                    const rc = cells[ry][rx];
+                    let statusClass = '';
+                    if (robot.status === 'CHARGING') statusClass = ' charging';
+                    else if (robot.status === 'DELIVERING') statusClass = ' delivering';
+
+                    rc.className = 'cell cell-robot' + statusClass;
+                    rc.innerHTML = `<span class="robot-id">R${robot.id}</span><span class="robot-batt">${Math.round(robot.battery)}%</span>`;
+                }
+            }
+        }
+
+        // ---- Update Status Panel ----
+
+        function updateStatus(status) {
+            document.getElementById('stat-step').textContent = status.current_step;
+            document.getElementById('stat-active').textContent = status.active_robots;
+            document.getElementById('stat-total-tasks').textContent = status.total_tasks;
+            document.getElementById('stat-unfinished').textContent = status.unfinished_tasks;
+
+            const runEl = document.getElementById('stat-running');
+
+            if (status.simulation_complete) {
+                runEl.textContent = 'COMPLETE';
+                runEl.className = 'stat-value complete';
+            } else if (status.running) {
+                runEl.textContent = 'RUNNING';
+                runEl.className = 'stat-value running';
+            } else {
+                runEl.textContent = 'PAUSED';
+                runEl.className = 'stat-value paused';
+            }
+        }
+
+        // ---- Update Robot List ----
+
+        function updateRobotList(robots) {
+            const list = document.getElementById('robot-list');
+            list.innerHTML = '';
+
+            for (const robot of robots) {
+                const batt = Math.round(robot.battery);
+                let battColor = 'var(--accent-green)';
+                if (batt <= 20) battColor = 'var(--accent-red)';
+                else if (batt <= 50) battColor = 'var(--accent-orange)';
+
+                const statusLower = robot.status.toLowerCase();
+                let statusClass = 'status-idle';
+                if (statusLower === 'moving') statusClass = 'status-moving';
+                else if (statusLower === 'charging') statusClass = 'status-charging';
+                else if (statusLower === 'delivering') statusClass = 'status-delivering';
+
+                const entry = document.createElement('div');
+                entry.className = 'robot-entry';
+                entry.innerHTML = `
+                    <span class="robot-entry-id">R${robot.id}</span>
+                    <span class="robot-entry-status ${statusClass}">${robot.status}</span>
+                    <div class="battery-bar">
+                        <div class="battery-fill" style="width: ${batt}%; background: ${battColor};"></div>
+                    </div>
+                    <span class="battery-text">${batt}%</span>
+                `;
+                list.appendChild(entry);
+            }
+        }
+
+        // ---- API Post Helper ----
+
+        async function apiPost(url) {
+            try {
+                await fetch(url, { method: 'POST' });
+            } catch (e) {
+                console.error('API call failed:', e);
+            }
+        }
+
+        // ---- Start ----
+
+        init();
+    </script>
+
+</body>
+</html>
