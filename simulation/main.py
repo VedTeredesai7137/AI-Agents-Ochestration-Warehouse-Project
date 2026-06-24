@@ -26,11 +26,30 @@ def main():
 
     task_manager = TaskManager()
 
-    task_manager.create_task(10, 1)
-    task_manager.create_task(15, 4)
-    task_manager.create_task(20, 7)
-    task_manager.create_task(25, 10)
-    task_manager.create_task(27, 13)
+    task_manager.create_task(
+    10, 1,
+    1, 1
+)
+
+    task_manager.create_task(
+        15, 4,
+        1, 4
+    )
+
+    task_manager.create_task(
+        20, 7,
+        1, 7
+    )
+
+    task_manager.create_task(
+        25, 10,
+        1, 10
+    )
+
+    task_manager.create_task(
+        27, 13,
+        1, 13
+    )
 
     pathfinder = AStarPathfinder(
         warehouse
@@ -79,8 +98,8 @@ def main():
         ):
 
             task_manager.create_task(
-                5,
-                6
+                5, 6,
+                1, 6
             )
 
         if (
@@ -89,9 +108,10 @@ def main():
         ):
 
             task_manager.create_task(
-                18,
-                15
+                18, 15,
+                1, 15
             )
+            
         if simulation.current_step % 50 == 0:
 
             print("\nDEBUG")

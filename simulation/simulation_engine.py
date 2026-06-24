@@ -31,10 +31,23 @@ class SimulationEngine:
 
             robot = self.robot_manager.get_robot(winner)
 
-            path = self.pathfinder.find_path(
+            pickup_path = self.pathfinder.find_path(
                 (robot.position.x, robot.position.y),
                 (task.pickup_x, task.pickup_y)
             )
+
+            delivery_path = self.pathfinder.find_path(
+                (task.pickup_x, task.pickup_y),
+                (task.delivery_x, task.delivery_y)
+            )
+
+            if not pickup_path:
+                continue
+
+            if not delivery_path:
+                continue
+
+            path = pickup_path
 
             if not path:
                 continue
@@ -49,6 +62,7 @@ class SimulationEngine:
                 task.id,
                 path
             )
+            robot.delivery_path = delivery_path
 
             print(
                 f"Task {task.id} assigned to Robot {winner}"
@@ -150,17 +164,48 @@ class SimulationEngine:
 
                 elif robot.current_task is not None:
 
-                    print(
-                        f"Robot {robot.id} completed Task "
-                        f"{robot.current_task}"
-                    )
-
-                    self.task_manager.complete_task(
+                    task = self.task_manager.get_task(
                         robot.current_task
                     )
 
-                    robot.current_task = None
-                    robot.status = RobotStatus.IDLE
+                    if not robot.carrying_item:
+
+                        robot.carrying_item = True
+
+                        robot.path = (
+                            robot.delivery_path
+                        )
+
+                        robot.status = (
+                            RobotStatus.DELIVERING
+                        )
+
+                        print(
+                            f"Robot {robot.id} "
+                            f"picked item"
+                        )
+
+                    else:
+
+                        print(
+                            f"Robot {robot.id} "
+                            f"delivered Task "
+                            f"{robot.current_task}"
+                        )
+
+                        self.task_manager.complete_task(
+                            robot.current_task
+                        )
+
+                        robot.current_task = None
+
+                        robot.carrying_item = False
+
+                        robot.delivery_path = []
+
+                        robot.status = (
+                            RobotStatus.IDLE
+                        )
 
     def is_complete(self):
 

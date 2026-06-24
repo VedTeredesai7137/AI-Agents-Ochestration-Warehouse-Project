@@ -26,9 +26,7 @@ class RobotStatus(str, Enum):
 
     CHARGING = "CHARGING"
 
-    NEEDS_CHARGE = (
-        "NEEDS_CHARGE"
-    )
+    NEEDS_CHARGE = "NEEDS_CHARGE"
 
 
 class Robot(BaseModel):
@@ -43,7 +41,13 @@ class Robot(BaseModel):
 
     current_task: int | None = None
 
+    carrying_item: bool = False
+
     path: list = Field(
+        default_factory=list
+    )
+
+    delivery_path: list = Field(
         default_factory=list
     )
 
@@ -59,6 +63,8 @@ class Robot(BaseModel):
             f"{self.battery:.1f}, "
             f"task="
             f"{self.current_task}, "
+            f"carrying="
+            f"{self.carrying_item}, "
             f"status="
             f"{self.status.value}"
             f")"
