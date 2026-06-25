@@ -13,6 +13,8 @@ from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
 from simulation.agent_manager import AgentManager
+from simulation.message_bus import MessageBus
+from simulation.task_agent_manager import TaskAgentManager
 
 
 def main():
@@ -21,120 +23,69 @@ def main():
     warehouse.generate()
 
     robot_manager = RobotManager()
-    robot_manager.spawn_from_warehouse(
-        warehouse
-    )
+    robot_manager.spawn_from_warehouse(warehouse)
 
     task_manager = TaskManager()
 
-    task_manager.create_task(
-    10, 1,
-    1, 1
-)
+    task_manager.create_task(10, 1, 1, 1)
+    task_manager.create_task(15, 4, 1, 4)
+    task_manager.create_task(20, 7, 1, 7)
+    task_manager.create_task(25, 10, 1, 10)
+    task_manager.create_task(27, 13, 1, 13)
 
-    task_manager.create_task(
-        15, 4,
-        1, 4
-    )
+    pathfinder = AStarPathfinder(warehouse)
+    collision_manager = CollisionManager()
+    charging_manager = ChargingManager()
+    auction_manager = AuctionManager(robot_manager)
 
-    task_manager.create_task(
-        20, 7,
-        1, 7
-    )
+    # --- Multi-Agent System ---
+    message_bus = MessageBus()
 
-    task_manager.create_task(
-        25, 10,
-        1, 10
-    )
-
-    task_manager.create_task(
-        27, 13,
-        1, 13
-    )
-
-    pathfinder = AStarPathfinder(
-        warehouse
-    )
-
-    collision_manager = (
-        CollisionManager()
-    )
-
-    charging_manager = (
-        ChargingManager()
-    )
-
-    auction_manager = (
-        AuctionManager(
-            robot_manager
-        )
-    )
-
-    agent_manager = AgentManager(
-        robot_manager
-    )
+    agent_manager = AgentManager(robot_manager, message_bus=message_bus)
     agent_manager.create_agents()
 
-    simulation = (
-        SimulationEngine(
-            robot_manager,
-            collision_manager,
-            task_manager,
-            charging_manager,
-            pathfinder,
-            auction_manager,
-            agent_manager=agent_manager
-        )
-    )
-    print( f"Robots: {len(robot_manager.robots)}" )
-    print( f"Tasks: {len(task_manager.tasks)}" )
-    print( f"Pathfinder: {pathfinder}" )
-    print( f"Collision Manager: {collision_manager}" )
-    print( f"Charging Manager: {charging_manager}" )
-    print( f"Auction Manager: {auction_manager}" )
-    print( f"Agent Manager: {agent_manager}" )
+    task_agent_manager = TaskAgentManager(task_manager, message_bus)
+    task_agent_manager.create_agents_for_existing_tasks()
 
-    while (
-        not simulation.is_complete()
-    ):
+    simulation = SimulationEngine(
+        robot_manager,
+        collision_manager,
+        task_manager,
+        charging_manager,
+        pathfinder,
+        auction_manager=auction_manager,
+        agent_manager=agent_manager,
+        task_agent_manager=task_agent_manager,
+    )
+
+    print(f"Robots: {len(robot_manager.robots)}")
+    print(f"Tasks: {len(task_manager.tasks)}")
+    print(f"MessageBus: {message_bus}")
+    print(f"Agent Manager: {agent_manager}")
+    print(f"Task Agent Manager: {task_agent_manager}")
+
+    while not simulation.is_complete():
 
         simulation.step()
 
-        if (
-            simulation.current_step
-            == 10
-        ):
-
-            task_manager.create_task(
-                5, 6,
-                1, 6
+        if simulation.current_step == 10:
+            task_manager.create_task(5, 6, 1, 6)
+            task_agent_manager.create_agent_for_task(
+                task_manager.next_task_id - 1
             )
 
-        if (
-            simulation.current_step
-            == 20
-        ):
-
-            task_manager.create_task(
-                18, 15,
-                1, 15
+        if simulation.current_step == 20:
+            task_manager.create_task(18, 15, 1, 15)
+            task_agent_manager.create_agent_for_task(
+                task_manager.next_task_id - 1
             )
-            
+
         if simulation.current_step % 50 == 0:
-
             print("\nDEBUG")
-
             for task in task_manager.tasks:
+                print(task.id, task.assigned_robot, task.completed)
 
-                print(
-                    task.id,
-            task.assigned_robot,
-            task.completed
-        )
-
-    print(
-        "\nSIMULATION COMPLETE"
-    )
+    print("\nSIMULATION COMPLETE")
 
 
 if __name__ == "__main__":

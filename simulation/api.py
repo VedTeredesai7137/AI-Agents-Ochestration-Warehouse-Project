@@ -19,6 +19,8 @@ from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
 from simulation.agent_manager import AgentManager
+from simulation.message_bus import MessageBus
+from simulation.task_agent_manager import TaskAgentManager
 
 
 # --- Pydantic Request Models ---
@@ -36,6 +38,14 @@ def initialize_simulation():
     """
     Creates all simulation components and returns them.
     Used at startup and by the reset endpoint.
+
+    Architecture:
+      MessageBus connects TaskAgents and RobotAgents.
+      TaskAgentManager issues CFPs and awards contracts.
+      AgentManager drives robot perceive-decide-act cycles.
+      SimulationEngine orchestrates ticks without making decisions.
+      AuctionManager is retained for backward compatibility but is
+      NOT used for task allocation when the multi-agent system is active.
     """
 
     warehouse = Warehouse(width=30, height=20)
@@ -60,8 +70,14 @@ def initialize_simulation():
 
     auction_manager = AuctionManager(robot_manager)
 
-    agent_manager = AgentManager(robot_manager)
+    # --- Multi-Agent System ---
+    message_bus = MessageBus()
+
+    agent_manager = AgentManager(robot_manager, message_bus=message_bus)
     agent_manager.create_agents()
+
+    task_agent_manager = TaskAgentManager(task_manager, message_bus)
+    task_agent_manager.create_agents_for_existing_tasks()
 
     simulation = SimulationEngine(
         robot_manager,
@@ -69,8 +85,9 @@ def initialize_simulation():
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager,
-        agent_manager=agent_manager
+        auction_manager=auction_manager,
+        agent_manager=agent_manager,
+        task_agent_manager=task_agent_manager,
     )
 
     return (
@@ -82,6 +99,8 @@ def initialize_simulation():
         charging_manager,
         auction_manager,
         agent_manager,
+        message_bus,
+        task_agent_manager,
         simulation
     )
 
@@ -97,6 +116,8 @@ def initialize_simulation():
     charging_manager,
     auction_manager,
     agent_manager,
+    message_bus,
+    task_agent_manager,
     simulation
 ) = initialize_simulation()
 
@@ -130,8 +151,8 @@ def simulation_loop():
 
 app = FastAPI(
     title="Warehouse Swarm API",
-    description="API for the Warehouse Swarm Robotics Simulation",
-    version="2.0.0"
+    description="Multi-Agent Warehouse Swarm Robotics Simulation API",
+    version="3.0.0"
 )
 
 templates = Jinja2Templates(
@@ -163,7 +184,7 @@ def get_warehouse_grid():
 
 
 # ===========================
-# EXISTING ENDPOINTS (Day 12)
+# CORE ENDPOINTS
 # ===========================
 
 @app.get("/")
@@ -207,7 +228,7 @@ def get_tasks():
 
 
 # ============================
-# DAY 13 — SIMULATION CONTROL
+# SIMULATION CONTROL
 # ============================
 
 @app.post("/simulation/step")
@@ -225,7 +246,7 @@ def post_simulation_step():
 
 @app.post("/tasks/create")
 def post_create_task(request: TaskCreateRequest):
-    """Create a new task dynamically via API."""
+    """Create a new task dynamically via API. Automatically creates a TaskAgent."""
 
     with simulation_lock:
         task_manager.create_task(
@@ -235,7 +256,10 @@ def post_create_task(request: TaskCreateRequest):
             request.delivery_y
         )
 
-    new_task_id = task_manager.next_task_id - 1
+        new_task_id = task_manager.next_task_id - 1
+
+        # Create a TaskAgent for the new task
+        task_agent_manager.create_agent_for_task(new_task_id)
 
     return {
         "success": True,
@@ -255,6 +279,8 @@ def post_simulation_reset():
     global charging_manager
     global auction_manager
     global agent_manager
+    global message_bus
+    global task_agent_manager
     global simulation
     global simulation_running
     global simulation_thread
@@ -279,6 +305,8 @@ def post_simulation_reset():
             charging_manager,
             auction_manager,
             agent_manager,
+            message_bus,
+            task_agent_manager,
             simulation
         ) = initialize_simulation()
 
@@ -289,7 +317,7 @@ def post_simulation_reset():
 
 
 # ===============================
-# DAY 14 — AUTONOMOUS LOOP
+# AUTONOMOUS LOOP
 # ===============================
 
 @app.post("/simulation/start")
@@ -339,7 +367,7 @@ def post_simulation_pause():
 
 
 # ============================
-# ENHANCED STATUS (Day 14)
+# SIMULATION STATUS
 # ============================
 
 @app.get("/simulation/status")
@@ -375,7 +403,7 @@ def get_simulation_status():
 
 @app.get("/agents/status")
 def get_agents_status():
-    """Return the current goal and beliefs for every robot agent."""
+    """Return the current goal, beliefs, memory size, and pending messages for every robot agent."""
     return {
         "agents": [
             {
@@ -383,7 +411,38 @@ def get_agents_status():
                 "goal": agent.goal,
                 "beliefs": agent.beliefs,
                 "memory_size": len(agent.memory),
+                "pending_messages": message_bus.pending_count(agent.agent_id),
             }
             for agent in agent_manager.agents
         ]
+    }
+
+
+@app.get("/agents/messages")
+def get_agents_messages():
+    """Return pending messages for every robot agent (peek without consuming)."""
+    return {
+        "agents": [
+            {
+                "robot_id": agent.robot.id,
+                "pending_messages": [
+                    {
+                        "id": msg.id,
+                        "sender": msg.sender,
+                        "type": msg.message_type.value,
+                        "payload": msg.payload,
+                    }
+                    for msg in message_bus.peek_messages(agent.agent_id)
+                ]
+            }
+            for agent in agent_manager.agents
+        ]
+    }
+
+
+@app.get("/tasks/agents")
+def get_task_agents_status():
+    """Return the status of all task agents (CNP lifecycle)."""
+    return {
+        "task_agents": task_agent_manager.get_all_status()
     }

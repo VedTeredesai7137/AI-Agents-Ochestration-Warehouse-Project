@@ -1,3 +1,18 @@
+"""
+SimulationEngine — Orchestration infrastructure for the warehouse simulation.
+
+The engine coordinates execution but does NOT make task assignment decisions.
+Task allocation is handled by TaskAgents via the Contract Net Protocol.
+Robot behavior is handled by RobotAgents via the perceive-decide-act cycle.
+
+Responsibilities:
+  - Advance simulation step counter.
+  - Reset collision reservations each step.
+  - Tick TaskAgentManager (CNP lifecycle).
+  - Tick AgentManager (robot perceive-decide-act).
+  - Detect simulation completion.
+"""
+
 from simulation.models import RobotStatus
 
 
@@ -10,8 +25,9 @@ class SimulationEngine:
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager,
-        agent_manager=None
+        auction_manager=None,
+        agent_manager=None,
+        task_agent_manager=None
     ):
         self.robot_manager = robot_manager
         self.collision_manager = collision_manager
@@ -20,9 +36,18 @@ class SimulationEngine:
         self.pathfinder = pathfinder
         self.auction_manager = auction_manager
         self.agent_manager = agent_manager
+        self.task_agent_manager = task_agent_manager
         self.current_step = 0
 
+    # ------------------------------------------------------------------
+    # Legacy assign_new_tasks — kept for backward compatibility when
+    # no task_agent_manager is present.
+    # ------------------------------------------------------------------
+
     def assign_new_tasks(self):
+        """Centralized auction fallback (used only if no task_agent_manager)."""
+        if self.auction_manager is None:
+            return
 
         for task in self.task_manager.get_unassigned_tasks():
 
@@ -120,12 +145,17 @@ class SimulationEngine:
 
         print(f"\nSTEP {self.current_step}")
 
-        self.assign_new_tasks()
-
         self.collision_manager.reset_step()
 
-        # ----- agent-driven path (new) -----
-        if self.agent_manager is not None:
+        # ----- Multi-Agent path (new: CNP + agents) -----
+        if self.task_agent_manager is not None and self.agent_manager is not None:
+            # 1. Tick task agents (issue CFPs, collect proposals, award contracts)
+            self.task_agent_manager.tick_all(
+                robot_manager=self.robot_manager,
+                pathfinder=self.pathfinder,
+            )
+
+            # 2. Tick robot agents (process messages, perceive, decide, act)
             self.agent_manager.tick_all(
                 task_manager=self.task_manager,
                 charging_manager=self.charging_manager,
@@ -134,7 +164,20 @@ class SimulationEngine:
             )
             return
 
-        # ----- legacy path (preserved for backward compat) -----
+        # ----- Agent-only path (agents without CNP) -----
+        if self.agent_manager is not None:
+            self.assign_new_tasks()
+            self.agent_manager.tick_all(
+                task_manager=self.task_manager,
+                charging_manager=self.charging_manager,
+                pathfinder=self.pathfinder,
+                collision_manager=self.collision_manager,
+            )
+            return
+
+        # ----- Legacy path (no agents at all) -----
+        self.assign_new_tasks()
+
         for robot in self.robot_manager.robots:
 
             self.handle_battery(robot)
