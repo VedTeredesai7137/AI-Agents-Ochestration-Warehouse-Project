@@ -10,7 +10,8 @@ class SimulationEngine:
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager
+        auction_manager,
+        agent_manager=None
     ):
         self.robot_manager = robot_manager
         self.collision_manager = collision_manager
@@ -18,6 +19,7 @@ class SimulationEngine:
         self.charging_manager = charging_manager
         self.pathfinder = pathfinder
         self.auction_manager = auction_manager
+        self.agent_manager = agent_manager
         self.current_step = 0
 
     def assign_new_tasks(self):
@@ -68,6 +70,11 @@ class SimulationEngine:
                 f"Task {task.id} assigned to Robot {winner}"
             )
 
+    # ------------------------------------------------------------------
+    # Legacy handle_battery — kept for backward compatibility when
+    # no agent_manager is present.
+    # ------------------------------------------------------------------
+
     def handle_battery(self, robot):
 
         if robot.battery > 20:
@@ -103,6 +110,10 @@ class SimulationEngine:
             f"Robot {robot.id} going to charge"
         )
 
+    # ------------------------------------------------------------------
+    # STEP — main simulation tick
+    # ------------------------------------------------------------------
+
     def step(self):
 
         self.current_step += 1
@@ -113,6 +124,17 @@ class SimulationEngine:
 
         self.collision_manager.reset_step()
 
+        # ----- agent-driven path (new) -----
+        if self.agent_manager is not None:
+            self.agent_manager.tick_all(
+                task_manager=self.task_manager,
+                charging_manager=self.charging_manager,
+                pathfinder=self.pathfinder,
+                collision_manager=self.collision_manager,
+            )
+            return
+
+        # ----- legacy path (preserved for backward compat) -----
         for robot in self.robot_manager.robots:
 
             self.handle_battery(robot)

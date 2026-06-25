@@ -18,6 +18,7 @@ from simulation.collision_manager import CollisionManager
 from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
+from simulation.agent_manager import AgentManager
 
 
 # --- Pydantic Request Models ---
@@ -59,13 +60,17 @@ def initialize_simulation():
 
     auction_manager = AuctionManager(robot_manager)
 
+    agent_manager = AgentManager(robot_manager)
+    agent_manager.create_agents()
+
     simulation = SimulationEngine(
         robot_manager,
         collision_manager,
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager
+        auction_manager,
+        agent_manager=agent_manager
     )
 
     return (
@@ -76,6 +81,7 @@ def initialize_simulation():
         collision_manager,
         charging_manager,
         auction_manager,
+        agent_manager,
         simulation
     )
 
@@ -90,6 +96,7 @@ def initialize_simulation():
     collision_manager,
     charging_manager,
     auction_manager,
+    agent_manager,
     simulation
 ) = initialize_simulation()
 
@@ -247,6 +254,7 @@ def post_simulation_reset():
     global collision_manager
     global charging_manager
     global auction_manager
+    global agent_manager
     global simulation
     global simulation_running
     global simulation_thread
@@ -270,6 +278,7 @@ def post_simulation_reset():
             collision_manager,
             charging_manager,
             auction_manager,
+            agent_manager,
             simulation
         ) = initialize_simulation()
 
@@ -357,4 +366,24 @@ def get_simulation_status():
         "total_tasks": len(task_manager.tasks),
         "simulation_complete": simulation.is_complete(),
         "running": simulation_running
+    }
+
+
+# ============================
+# AGENT INTROSPECTION
+# ============================
+
+@app.get("/agents/status")
+def get_agents_status():
+    """Return the current goal and beliefs for every robot agent."""
+    return {
+        "agents": [
+            {
+                "robot_id": agent.robot.id,
+                "goal": agent.goal,
+                "beliefs": agent.beliefs,
+                "memory_size": len(agent.memory),
+            }
+            for agent in agent_manager.agents
+        ]
     }

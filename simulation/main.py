@@ -12,6 +12,7 @@ from simulation.collision_manager import CollisionManager
 from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
+from simulation.agent_manager import AgentManager
 
 
 def main():
@@ -69,6 +70,11 @@ def main():
         )
     )
 
+    agent_manager = AgentManager(
+        robot_manager
+    )
+    agent_manager.create_agents()
+
     simulation = (
         SimulationEngine(
             robot_manager,
@@ -76,7 +82,8 @@ def main():
             task_manager,
             charging_manager,
             pathfinder,
-            auction_manager
+            auction_manager,
+            agent_manager=agent_manager
         )
     )
     print( f"Robots: {len(robot_manager.robots)}" )
@@ -85,6 +92,7 @@ def main():
     print( f"Collision Manager: {collision_manager}" )
     print( f"Charging Manager: {charging_manager}" )
     print( f"Auction Manager: {auction_manager}" )
+    print( f"Agent Manager: {agent_manager}" )
 
     while (
         not simulation.is_complete()

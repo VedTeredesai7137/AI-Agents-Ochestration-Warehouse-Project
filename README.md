@@ -27,18 +27,25 @@ FastAPI REST API (simulation/api.py)
        │
        │ direct Python method calls
        ▼
-┌─────────────────────────────────────────────────────┐
-│                 SimulationEngine                     │
-│  ┌──────────┐ ┌──────────────┐ ┌──────────────────┐ │
-│  │ Warehouse│ │ RobotManager │ │  TaskManager     │ │
-│  └──────────┘ └──────────────┘ └──────────────────┘ │
-│  ┌──────────────┐ ┌────────────┐ ┌────────────────┐ │
-│  │AuctionManager│ │ Pathfinder │ │CollisionManager│ │
-│  └──────────────┘ └────────────┘ └────────────────┘ │
-│  ┌────────────────┐                                  │
-│  │ChargingManager │                                  │
-│  └────────────────┘                                  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   SimulationEngine                        │
+│  ┌──────────┐ ┌──────────────┐ ┌──────────────────┐      │
+│  │ Warehouse│ │ RobotManager │ │  TaskManager     │      │
+│  └──────────┘ └──────────────┘ └──────────────────┘      │
+│  ┌──────────────┐ ┌────────────┐ ┌────────────────┐      │
+│  │AuctionManager│ │ Pathfinder │ │CollisionManager│      │
+│  └──────────────┘ └────────────┘ └────────────────┘      │
+│  ┌────────────────┐ ┌──────────────┐                     │
+│  │ChargingManager │ │ AgentManager │ ◄── NEW             │
+│  └────────────────┘ └──────┬───────┘                     │
+│                            │ tick_all()                   │
+│                  ┌─────────▼──────────┐                  │
+│                  │   RobotAgent (×N)   │ ◄── NEW          │
+│                  │ perceive→decide→act │                  │
+│                  │ beliefs, memory,    │                  │
+│                  │ goal, current_plan  │                  │
+│                  └────────────────────┘                   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
@@ -52,8 +59,10 @@ FastAPI REST API (simulation/api.py)
 | **AStarPathfinder** | `simulation/pathfinder.py` | A* pathfinding on the warehouse grid. Manhattan heuristic. Returns list of coordinate tuples from start to goal. |
 | **CollisionManager** | `simulation/collision_manager.py` | Per-step cell reservation. Prevents two robots from occupying the same cell in the same simulation step. |
 | **ChargingManager** | `simulation/charging_manager.py` | Selects nearest charging station by Manhattan distance for low-battery robots. |
-| **SimulationEngine** | `simulation/simulation_engine.py` | Orchestrates each simulation step: task assignment, battery handling, robot movement, task completion, charging. |
-| **API** | `simulation/api.py` | FastAPI application. Initializes simulation, exposes REST endpoints, manages background simulation thread. |
+| **RobotAgent** | `simulation/robot_agent.py` | Autonomous agent wrapping a single Robot. Implements perceive→decide→act loop with beliefs, memory, goal, and current_plan. |
+| **AgentManager** | `simulation/agent_manager.py` | Creates and manages all RobotAgent instances. Orchestrates per-step tick cycle for every agent. |
+| **SimulationEngine** | `simulation/simulation_engine.py` | Orchestrates each simulation step: task assignment, then delegates robot behavior to AgentManager (or legacy inline loop as fallback). |
+| **API** | `simulation/api.py` | FastAPI application. Initializes simulation, exposes REST endpoints, manages background simulation thread. Includes agent introspection endpoint. |
 | **Dashboard** | `simulation/templates/dashboard.html` | Browser-based visualization. Pure HTML/CSS/JS with Jinja2 templating. Polls API every 200ms. |
 | **Main** | `simulation/main.py` | Console-based simulation runner (standalone, not used by API). |
 | **Constants** | `simulation/constants.py` | Shared constants (currently not imported by other modules). |
@@ -69,16 +78,18 @@ Warehouse Swarm Porject/
 ├── python311/                    # Local Python 3.11 installation
 ├── simulation/
 │   ├── __init__.py               # Package marker (empty)
-│   ├── api.py                    # FastAPI app (361 lines)
+│   ├── agent_manager.py          # Agent orchestration manager (NEW)
+│   ├── api.py                    # FastAPI app (390 lines)
 │   ├── auction_manager.py        # Auction-based task allocation (86 lines)
 │   ├── charging_manager.py       # Charging station selection (52 lines)
 │   ├── collision_manager.py      # Per-step collision avoidance (24 lines)
 │   ├── constants.py              # Shared constants (11 lines)
-│   ├── main.py                   # Console simulation runner (133 lines)
+│   ├── main.py                   # Console simulation runner (141 lines)
 │   ├── models.py                 # Pydantic models (71 lines)
 │   ├── pathfinder.py             # A* pathfinding (110 lines)
+│   ├── robot_agent.py            # Autonomous robot agent (NEW)
 │   ├── robot_manager.py          # Robot lifecycle management (104 lines)
-│   ├── simulation_engine.py      # Core step engine (227 lines)
+│   ├── simulation_engine.py      # Core step engine (249 lines)
 │   ├── task_manager.py           # Task lifecycle management (99 lines)
 │   ├── warehouse.py              # Grid generation (95 lines)
 │   └── templates/
@@ -316,7 +327,12 @@ The first robot to reserve a cell in iteration order wins. Other robots attempti
 2. Print step number.
 3. Call `assign_new_tasks()` — iterates unassigned tasks, runs auctions, computes pickup paths and delivery paths, assigns winners.
 4. Call `collision_manager.reset_step()` — clears cell reservations.
-5. For each robot:
+5. **Agent-driven path (default):** If `agent_manager` is present, call `agent_manager.tick_all()` which runs each agent's `perceive() → decide() → act()` cycle. Then return.
+6. **Legacy path (fallback):** If `agent_manager is None`, run the original per-robot inline loop (see below for details).
+
+#### Legacy Per-Robot Loop (when agent_manager is None)
+
+For each robot:
    a. Call `handle_battery(robot)` — check if battery ≤ 20, redirect to charger if needed.
    b. If `len(robot.path) <= 1`:
       - If `CHARGING`: add `+10` to battery. If ≥ 100, set `IDLE`.
@@ -559,6 +575,35 @@ Create a new task dynamically via API.
 
 ---
 
+#### GET /agents/status
+
+Returns the current goal, beliefs, and memory size for every robot agent.
+
+**Response:**
+
+```json
+{
+  "agents": [
+    {
+      "robot_id": 1,
+      "goal": "PICKUP",
+      "beliefs": {
+        "battery_low": false,
+        "has_task": true,
+        "carrying_item": false,
+        "at_destination": false,
+        "at_charger": false,
+        "battery_full": false,
+        "path_blocked": false
+      },
+      "memory_size": 3
+    }
+  ]
+}
+```
+
+---
+
 ## 14. Dashboard Visualization
 
 ### Overview
@@ -686,10 +731,13 @@ warehouse.py ◄── pathfinder.py             │
     │                │                     │
     └── robot_manager.py                   │
                                            ▼
-models.py ◄── simulation_engine.py ◄── api.py ──► dashboard.html
-                    ▲                      ▲
+models.py ◄── robot_agent.py ◄── agent_manager.py
+                    ▲                      │
                     │                      │
-task_manager.py ────┘                      │
+models.py ◄── simulation_engine.py ◄── api.py ──► dashboard.html
+                    ▲         │            ▲
+                    │         ▼            │
+task_manager.py ────┘  agent_manager.py    │
 collision_manager.py ──────────────────────┘
 charging_manager.py ───────────────────────┘
 ```
@@ -706,9 +754,11 @@ charging_manager.py ────────────────────
 | `auction_manager.py` | (none, receives `robot_manager` via constructor) |
 | `collision_manager.py` | (none) |
 | `charging_manager.py` | (none) |
+| `robot_agent.py` | `simulation.models.RobotStatus` |
+| `agent_manager.py` | `simulation.robot_agent.RobotAgent` |
 | `simulation_engine.py` | `simulation.models.RobotStatus` |
-| `api.py` | `sys`, `threading`, `time`, `pathlib.Path`, `fastapi`, `pydantic.BaseModel`, all simulation modules |
-| `main.py` | `sys`, `pathlib.Path`, all simulation modules |
+| `api.py` | `sys`, `threading`, `time`, `pathlib.Path`, `fastapi`, `pydantic.BaseModel`, all simulation modules, `simulation.agent_manager.AgentManager` |
+| `main.py` | `sys`, `pathlib.Path`, all simulation modules, `simulation.agent_manager.AgentManager` |
 | `constants.py` | (none, currently not imported by any module) |
 
 ---
@@ -735,7 +785,7 @@ Takes 4 positional arguments. The task ID is auto-incremented internally.
 
 ### Simulation Factory
 
-`initialize_simulation()` in `api.py` creates all 8 components and returns them as a tuple. Used at startup and by the `/simulation/reset` endpoint to rebuild from scratch.
+`initialize_simulation()` in `api.py` creates all 9 components (including `AgentManager`) and returns them as a tuple. Used at startup and by the `/simulation/reset` endpoint to rebuild from scratch.
 
 ### Background Thread
 
@@ -746,7 +796,7 @@ Takes 4 positional arguments. The task ID is auto-incremented internally.
 
 ### Global State in api.py
 
-All simulation components are module-level variables in `api.py`. The `/simulation/reset` endpoint uses `global` to reassign them. The background thread references these globals.
+All simulation components (including `agent_manager`) are module-level variables in `api.py`. The `/simulation/reset` endpoint uses `global` to reassign them. The background thread references these globals.
 
 ### TemplateResponse Pattern
 
@@ -760,7 +810,99 @@ Not the older positional style `TemplateResponse("dashboard.html", {"request": r
 
 ---
 
-## 19. Known Limitations
+## 19. Robot Agent System
+
+### Overview
+
+The simulation uses an **agent-driven architecture** where each robot is controlled by an autonomous `RobotAgent`. Agents follow a **perceive → decide → act** loop each simulation step, replacing the previous centrally-controlled behavior in `SimulationEngine`.
+
+### RobotAgent
+
+File: `simulation/robot_agent.py`
+
+Each `RobotAgent` wraps a single `Robot` instance and contains:
+
+| Attribute | Type | Description |
+|---|---|---|
+| `robot` | `Robot` | Reference to the underlying Robot model (owned by RobotManager) |
+| `goal` | `str` | Current high-level goal: `IDLE`, `PICKUP`, `DELIVER`, `CHARGE` |
+| `beliefs` | `dict` | Local beliefs about the world (see table below) |
+| `memory` | `list[dict]` | Chronological log of notable events |
+| `current_plan` | `list[str]` | Planned micro-actions (reserved for future use) |
+
+#### Beliefs
+
+| Key | Type | Description |
+|---|---|---|
+| `battery_low` | `bool` | `True` if battery ≤ 20 |
+| `battery_full` | `bool` | `True` if battery ≥ 100 |
+| `has_task` | `bool` | `True` if robot has an assigned task |
+| `carrying_item` | `bool` | `True` if robot has picked up an item |
+| `at_destination` | `bool` | `True` if path length ≤ 1 (arrived) |
+| `at_charger` | `bool` | `True` if status is CHARGING and at destination |
+| `path_blocked` | `bool` | `True` if next cell is already reserved |
+
+#### Methods
+
+| Method | Description |
+|---|---|
+| `perceive(collision_manager)` | Updates beliefs from robot state and environment |
+| `decide()` | Returns an action tag based on current beliefs (e.g. `"move"`, `"pickup"`, `"need_charge"`) |
+| `act(action, **context)` | Executes the chosen action using injected dependencies |
+| `tick(**context)` | Convenience: runs perceive → decide → act in sequence |
+| `get_memory(last_n)` | Returns recent memory entries |
+
+#### Action Tags
+
+| Action | Trigger | Effect |
+|---|---|---|
+| `need_charge` | Battery ≤ 20, not already charging | Unassigns task, computes path to nearest charger, sets CHARGING |
+| `charge` | At charger, battery < 100 | Increments battery by +10 |
+| `charge_complete` | At charger, battery ≥ 100 | Sets battery to 100, status to IDLE |
+| `move` | Has path with length > 1 | Reserves next cell, moves one step, drains battery. Triggers arrival handlers on reaching destination |
+| `pickup` | At destination, has task, not carrying | Sets carrying_item, swaps path to delivery_path, status DELIVERING |
+| `deliver` | At destination, has task, carrying | Completes task, resets robot to IDLE |
+| `idle` | No task, no path | No-op |
+
+#### Memory Events
+
+Agents log the following events to their local memory:
+
+- `released_task` — task unassigned due to low battery
+- `going_to_charge` — navigating to a charging station
+- `fully_charged` — battery reached 100%
+- `blocked` — movement blocked by another robot
+- `arrived_at_charger` — reached charging station
+- `picked_item` — picked up item at pickup location
+- `delivered_task` — delivered item at delivery location
+
+### AgentManager
+
+File: `simulation/agent_manager.py`
+
+`AgentManager` creates and manages all `RobotAgent` instances.
+
+| Method | Description |
+|---|---|
+| `create_agents()` | Creates one `RobotAgent` per Robot in RobotManager |
+| `get_agent(robot_id)` | Returns the agent for a given robot ID |
+| `get_agent_for_robot(robot)` | Returns the agent wrapping a given Robot instance |
+| `tick_all(**context)` | Runs `tick()` on every agent (the per-step orchestration call) |
+| `get_all_beliefs()` | Returns `{robot_id: beliefs}` dict for debugging |
+| `get_all_goals()` | Returns `{robot_id: goal}` dict for debugging |
+
+### Integration with SimulationEngine
+
+`SimulationEngine.__init__()` accepts an optional `agent_manager` parameter.
+
+- **When `agent_manager` is provided (default):** `step()` calls `agent_manager.tick_all()` after task assignment and collision reset. All per-robot behavior (battery, movement, pickup, delivery, charging) is handled by the agents.
+- **When `agent_manager is None` (legacy fallback):** `step()` uses the original inline per-robot loop, preserving backward compatibility.
+
+Both `api.py` and `main.py` create an `AgentManager`, call `create_agents()`, and pass it to `SimulationEngine`.
+
+---
+
+## 20. Known Limitations
 
 - **No explicit closed set in A***. Relies on `g_score` for pruning. May produce duplicate heap entries.
 - **Collision avoidance is step-local only.** No multi-step path reservation, no swap detection, no deadlock avoidance.
@@ -771,3 +913,6 @@ Not the older positional style `TemplateResponse("dashboard.html", {"request": r
 - **No persistence.** All state is in-memory. Server restart loses everything.
 - **No WebSocket support.** Dashboard uses polling (200ms interval), not push-based updates.
 - **Single-threaded mutation.** All mutations go through one lock. Sufficient for current scale.
+- **Agent decisions are deterministic.** No LLM integration yet — agents use rule-based logic mirroring the original engine behavior.
+- **No inter-agent communication.** Agents do not negotiate or share beliefs. Contract Net Protocol is not yet implemented.
+- **`current_plan` is unused.** Reserved for future planning capabilities.
