@@ -28,6 +28,7 @@ class TaskAgentManager:
         self.message_bus = message_bus
         self.task_agents: list[TaskAgent] = []
         self._agent_map: dict[int, TaskAgent] = {}  # task_id -> TaskAgent
+        self.latest_logs = []
 
     def create_agents_for_existing_tasks(self):
         """Create a TaskAgent for every task currently in the TaskManager."""
@@ -60,11 +61,14 @@ class TaskAgentManager:
         """
         for agent in self.task_agents:
             if agent.status != TaskAgentStatus.COMPLETED:
-                agent.tick(
+                log = agent.tick(
                     task_manager=self.task_manager,
                     robot_manager=robot_manager,
                     pathfinder=pathfinder
                 )
+                if log:
+                    self.latest_logs.append(log)
+                    print(f"DEBUG: Backend generated auction log for Task {log['task_id']}")
 
     def get_agent(self, task_id: int):
         """Return the TaskAgent for the given task_id, or None."""

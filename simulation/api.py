@@ -205,7 +205,8 @@ def get_robots():
             },
             "battery": robot.battery,
             "status": robot.status.value,
-            "current_task": robot.current_task
+            "current_task": robot.current_task,
+            "path": [{"x": p[0], "y": p[1]} for p in robot.path] if robot.path else []
         }
         for robot in robot_manager.robots
     ]
@@ -225,6 +226,12 @@ def get_tasks():
         }
         for task in task_manager.tasks
     ]
+
+
+@app.get("/auction/logs")
+def get_auction_logs():
+    """Return the raw bids from the most recent task CNP auctions."""
+    return task_agent_manager.latest_logs
 
 
 # ============================

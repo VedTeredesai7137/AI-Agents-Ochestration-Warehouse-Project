@@ -86,11 +86,12 @@ class TaskAgent:
 
         if self.status == TaskAgentStatus.WAITING:
             self._send_cfp()
-            return
+            return None
 
         if self.status == TaskAgentStatus.CFP_SENT:
-            self._collect_and_evaluate(task_manager, robot_manager, pathfinder)
-            return
+            return self._collect_and_evaluate(task_manager, robot_manager, pathfinder)
+        
+        return None
 
     def _send_cfp(self):
         """Broadcast a Call For Proposals to all robot agents."""
@@ -124,7 +125,7 @@ class TaskAgent:
         if not self.received_proposals:
             # No proposals received — go back to WAITING to re-issue CFP next tick
             self.status = TaskAgentStatus.WAITING
-            return
+            return None
 
         # Evaluate: lowest estimated_cost wins
         self.received_proposals.sort(
@@ -139,7 +140,7 @@ class TaskAgent:
             # Winner no longer eligible — retry next tick
             self.received_proposals = []
             self.status = TaskAgentStatus.WAITING
-            return
+            return None
 
         # Compute paths
         pickup_path = pathfinder.find_path(
@@ -154,7 +155,7 @@ class TaskAgent:
         if not pickup_path or not delivery_path:
             self.received_proposals = []
             self.status = TaskAgentStatus.WAITING
-            return
+            return None
 
         # Award the contract
         task_manager.assign_task(self.task.id, winner_id)
@@ -177,6 +178,13 @@ class TaskAgent:
         self.message_bus.publish(award_msg)
 
         print(f"Task {self.task.id} awarded to Robot {winner_id} via CNP")
+        
+        log = {
+            "task_id": self.task.id,
+            "bids": [{"robot_id": p["robot_id"], "bid": p["estimated_cost"]} for p in self.received_proposals],
+            "winner": winner_id
+        }
+        return log
 
     @property
     def proposal_count(self):

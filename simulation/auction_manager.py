@@ -8,6 +8,7 @@ class AuctionManager:
         self.robot_manager = (
             robot_manager
         )
+        self.latest_logs = []
 
     def calculate_bid(
         self,
@@ -82,5 +83,11 @@ class AuctionManager:
             return None
 
         bids.sort()
+        
+        self.latest_logs.append({
+            "task_id": task.id,
+            "bids": [{"robot_id": r_id, "bid": b} for b, r_id in bids],
+            "winner": bids[0][1]
+        })
 
         return bids[0][1]

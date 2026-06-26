@@ -8,7 +8,7 @@ The system consists of:
 
 - A **multi-agent simulation core** — autonomous RobotAgents and TaskAgents communicate via a MessageBus. TaskAgents issue Calls for Proposals (CFPs), RobotAgents submit bids (PROPOSALs), and TaskAgents award contracts (TASK_AWARDED). No centralized controller makes allocation decisions.
 - A **FastAPI REST API** — exposes simulation state (robots, tasks, agents, messages), provides simulation control (step, start, pause, reset), and accepts dynamic task creation.
-- A **browser dashboard** — a Jinja2-rendered HTML/CSS/JS page at `/dashboard` that visualizes the warehouse grid in real-time by polling the API every 200ms.
+- A **browser dashboard** — a Jinja2-rendered HTML/CSS/JS page at `/dashboard` that visualizes the warehouse grid in real-time by polling the API every 200ms. It features live bidding logs, agent thought streams, and path intent overlays.
 
 The simulation runs in-memory. All state lives in Python objects. There is no database, no Redis, no message queue.
 
@@ -483,6 +483,7 @@ Each RobotAgent runs this cycle once per simulation step.
 | `GET` | `/agents/status` | Robot agent introspection |
 | `GET` | `/agents/messages` | Pending messages per robot |
 | `GET` | `/tasks/agents` | Task agent CNP status |
+| `GET` | `/auction/logs` | Raw bids from recent task auctions |
 
 ### GET /agents/status
 

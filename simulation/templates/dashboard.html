@@ -322,6 +322,11 @@
             50% { box-shadow: 0 0 14px rgba(240, 200, 80, 0.7); }
         }
 
+        @keyframes pathFlash {
+            0% { stroke: var(--accent-orange); stroke-width: 5; }
+            100% { stroke: rgba(74, 144, 226, 0.4); stroke-width: 2; }
+        }
+
         .cell-pickup {
             background: var(--accent-orange);
             color: #fff;
@@ -486,6 +491,30 @@
                 </div>
             </div>
 
+            <!-- Agent Diagnostics -->
+            <div class="card" id="agent-diagnostics" style="display: none;">
+                <div class="card-title">Agent Diagnostics: <span id="diag-robot-id"></span></div>
+                <div class="stat-row">
+                    <span class="stat-label">Goal</span>
+                    <span class="stat-value" id="diag-goal"></span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Memory Size</span>
+                    <span class="stat-value" id="diag-memory"></span>
+                </div>
+                <div class="stat-row" style="flex-direction: column; align-items: flex-start; gap: 8px; border-bottom: none;">
+                    <span class="stat-label">Beliefs</span>
+                    <pre id="diag-beliefs" style="font-size: 10px; color: var(--accent-blue); background: var(--bg-cell); padding: 8px; border-radius: 4px; width: 100%; white-space: pre-wrap; overflow-wrap: break-word; margin: 0;"></pre>
+                </div>
+            </div>
+
+            <!-- Auction Console -->
+            <div class="card">
+                <div class="card-title">Live Auction Logs</div>
+                <div id="auction-logs" style="font-size: 11px; max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
+                </div>
+            </div>
+
             <!-- Legend -->
             <div class="card">
                 <div class="card-title">Legend</div>
@@ -529,7 +558,8 @@
         <div class="main">
             <div class="card">
                 <div class="card-title">Warehouse Grid (30 × 20)</div>
-                <div class="grid-wrapper">
+                <div class="grid-wrapper" style="position: relative;">
+                    <svg id="path-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5;"></svg>
                     <div class="grid-container" id="grid"></div>
                 </div>
             </div>
@@ -544,12 +574,26 @@
         let gridWidth = 30;
         let gridHeight = 20;
         let cells = [];
+        let selectedRobotId = null;
+        let previousPaths = {};
+        let displayedAuctionLogs = 0;
 
         // ---- Init ----
 
         async function init() {
             await fetchGrid();
             buildGrid();
+            
+            document.getElementById('grid').addEventListener('click', (e) => {
+                const robotCell = e.target.closest('.cell-robot');
+                if (robotCell) {
+                    const idText = robotCell.querySelector('.robot-id').textContent.replace('R', '');
+                    selectedRobotId = parseInt(idText);
+                    document.getElementById('agent-diagnostics').style.display = 'block';
+                    document.getElementById('diag-robot-id').textContent = 'R' + selectedRobotId;
+                }
+            });
+            
             poll();
             setInterval(poll, 200);
         }
@@ -594,25 +638,48 @@
 
         async function poll() {
             try {
-                const [robotsRes, tasksRes, statusRes] = await Promise.all([
+                const [robotsRes, tasksRes, statusRes, agentsRes] = await Promise.all([
                     fetch('/robots'),
                     fetch('/tasks'),
-                    fetch('/simulation/status')
+                    fetch('/simulation/status'),
+                    fetch('/agents/status')
                 ]);
 
                 const robots = await robotsRes.json();
                 const tasks = await tasksRes.json();
                 const status = await statusRes.json();
+                const agents = await agentsRes.json();
 
                 updateGrid(robots, tasks);
+                drawPaths(robots);
                 updateStatus(status);
                 updateRobotList(robots);
+                updateDiagnostics(agents.agents);
 
                 document.getElementById('connection-badge').textContent = '● Connected';
                 document.getElementById('connection-badge').style.color = 'var(--accent-green)';
             } catch (e) {
+                console.error('Error fetching main simulation data:', e);
                 document.getElementById('connection-badge').textContent = '● Disconnected';
                 document.getElementById('connection-badge').style.color = 'var(--accent-red)';
+            }
+            
+            try {
+                const auctionRes = await fetch('/auction/logs');
+                if (!auctionRes.ok) {
+                    throw new Error(`HTTP error! status: ${auctionRes.status}`);
+                }
+                const auctionLogs = await auctionRes.json();
+                
+                if (!auctionLogs || auctionLogs.length === 0) {
+                    // console.log("Auction logs received: []"); // Disabled verbose polling to avoid spam, but can be enabled
+                } else if (auctionLogs.length > displayedAuctionLogs) {
+                    console.log(`Auction logs received: ${auctionLogs.length} logs found`, auctionLogs);
+                }
+                
+                updateAuctionLogs(auctionLogs);
+            } catch (e) {
+                console.error('Error fetching auction logs:', e);
             }
         }
 
@@ -734,6 +801,99 @@
                 `;
                 list.appendChild(entry);
             }
+        }
+
+        // ---- Render Paths ----
+
+        function drawPaths(robots) {
+            const svg = document.getElementById('path-overlay');
+            if (!svg) return;
+            svg.innerHTML = '';
+            
+            const container = document.getElementById('grid');
+            svg.style.width = container.scrollWidth + 'px';
+            svg.style.height = container.scrollHeight + 'px';
+
+            for (const robot of robots) {
+                if (!robot.path || robot.path.length < 1) continue;
+                
+                const isSelected = (robot.id === selectedRobotId);
+                const color = isSelected ? 'rgba(74, 144, 226, 0.9)' : 'rgba(74, 144, 226, 0.4)';
+                const strokeWidth = isSelected ? 3 : 2;
+                const strokeDasharray = isSelected ? "4,4" : "2,4";
+
+                let pathStr = JSON.stringify(robot.path);
+                let recalculated = false;
+                if (previousPaths[robot.id] && previousPaths[robot.id] !== pathStr) {
+                    const prevArr = JSON.parse(previousPaths[robot.id]);
+                    if (prevArr.length > 0 && robot.path.length > 0) {
+                        const prevDest = prevArr[prevArr.length - 1];
+                        const currDest = robot.path[robot.path.length - 1];
+                        if (prevDest.x === currDest.x && prevDest.y === currDest.y) {
+                            if (prevArr.length <= robot.path.length || (prevArr.length > 1 && prevArr[1].x !== robot.path[0].x)) {
+                                recalculated = true;
+                            }
+                        }
+                    }
+                }
+                previousPaths[robot.id] = pathStr;
+
+                let d = "";
+                let startX = 21 + 36 * robot.position.x;
+                let startY = 21 + 36 * robot.position.y;
+                d += `M ${startX} ${startY} `;
+
+                for (let i = 0; i < robot.path.length; i++) {
+                    const p = robot.path[i];
+                    let cx = 21 + 36 * p.x;
+                    let cy = 21 + 36 * p.y;
+                    d += `L ${cx} ${cy} `;
+                }
+
+                const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                pathEl.setAttribute('d', d);
+                pathEl.setAttribute('stroke', color);
+                pathEl.setAttribute('stroke-width', strokeWidth);
+                pathEl.setAttribute('fill', 'none');
+                pathEl.setAttribute('stroke-dasharray', strokeDasharray);
+                
+                if (recalculated) {
+                    pathEl.style.animation = "pathFlash 0.5s ease-out";
+                }
+                
+                svg.appendChild(pathEl);
+            }
+        }
+
+        // ---- Render Diagnostics & Auction Logs ----
+
+        function updateDiagnostics(agents) {
+            if (selectedRobotId === null) return;
+            const agent = agents.find(a => a.robot_id === selectedRobotId);
+            if (agent) {
+                document.getElementById('diag-goal').textContent = agent.goal;
+                document.getElementById('diag-memory').textContent = agent.memory_size;
+                document.getElementById('diag-beliefs').textContent = JSON.stringify(agent.beliefs, null, 2);
+            }
+        }
+
+        function updateAuctionLogs(logs) {
+            if (!logs || logs.length === displayedAuctionLogs) return;
+            
+            const container = document.getElementById('auction-logs');
+            for (let i = displayedAuctionLogs; i < logs.length; i++) {
+                const log = logs[i];
+                const div = document.createElement('div');
+                div.style.padding = '8px';
+                div.style.background = 'var(--bg-cell)';
+                div.style.borderRadius = '6px';
+                div.style.borderLeft = '3px solid var(--accent-orange)';
+                
+                let bidsHtml = log.bids.map(b => `R${b.robot_id}: ${b.bid.toFixed(1)}`).join(', ');
+                div.innerHTML = `<strong>Task ${log.task_id} Bids:</strong><br><span style="color:var(--text-secondary)">${bidsHtml}</span><br><strong style="color:var(--accent-green)">Winner: R${log.winner}</strong>`;
+                container.prepend(div);
+            }
+            displayedAuctionLogs = logs.length;
         }
 
         // ---- API Post Helper ----
