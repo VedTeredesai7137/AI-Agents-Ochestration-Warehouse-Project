@@ -8,6 +8,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from simulation.warehouse import Warehouse
@@ -168,6 +169,8 @@ app = FastAPI(
     description="Multi-Agent Warehouse Swarm Robotics Simulation API",
     version="3.0.0"
 )
+
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "templates")), name="static")
 
 templates = Jinja2Templates(
     directory=str(Path(__file__).parent / "templates")
