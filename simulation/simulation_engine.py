@@ -201,10 +201,12 @@ class SimulationEngine:
 
             next_x, next_y = robot.path[1]
 
-            if not self.collision_manager.reserve_cell(
+            success, _ = self.collision_manager.reserve_cell(
                 next_x,
-                next_y
-            ):
+                next_y,
+                robot.id
+            )
+            if not success:
                 continue
 
             robot.position.x = next_x

@@ -56,11 +56,18 @@ def initialize_simulation():
 
     task_manager = TaskManager()
 
-    task_manager.create_task(10, 1, 1, 1)
-    task_manager.create_task(15, 4, 1, 4)
-    task_manager.create_task(20, 7, 1, 7)
-    task_manager.create_task(25, 10, 1, 10)
-    task_manager.create_task(27, 13, 1, 13)
+    import random
+    def get_random_walkable():
+        while True:
+            x = random.randint(1, warehouse.width - 2)
+            y = random.randint(1, warehouse.height - 2)
+            if warehouse.grid[y][x] == ".":
+                return x, y
+
+    for _ in range(5):
+        px, py = get_random_walkable()
+        dx, dy = get_random_walkable()
+        task_manager.create_task(px, py, dx, dy)
 
     pathfinder = AStarPathfinder(warehouse)
 
@@ -232,6 +239,12 @@ def get_tasks():
 def get_auction_logs():
     """Return the raw bids from the most recent task CNP auctions."""
     return task_agent_manager.latest_logs
+
+@app.get("/negotiation/logs")
+def get_negotiation_logs():
+    """Return the deadlock negotiation logs from the local LLM."""
+    from simulation.negotiation_service import negotiation_service
+    return negotiation_service.negotiation_logs
 
 
 # ============================

@@ -14,9 +14,11 @@ class Warehouse:
         ]
 
     def add_shelves(self):
+        import random
         for row in range(2, self.height - 2, 3):
             for col in range(2, self.width - 2):
-                self.grid[row][col] = "S"
+                if random.random() > 0.15:
+                    self.grid[row][col] = "S"
 
     def add_charging_stations(self):
         self.grid[0][0] = "C"
@@ -25,9 +27,14 @@ class Warehouse:
         self.grid[0][self.width - 2] = "C"
 
     def add_robot_spawn_area(self):
-        spawn_row = self.height - 2
-        for col in range(1, 6):
-            self.grid[spawn_row][col] = "R"
+        import random
+        spawned = 0
+        while spawned < 5:
+            row = random.randint(self.height // 2, self.height - 2)
+            col = random.randint(1, self.width - 2)
+            if self.grid[row][col] == ".":
+                self.grid[row][col] = "R"
+                spawned += 1
 
     def generate(self):
         self.create_empty_grid()

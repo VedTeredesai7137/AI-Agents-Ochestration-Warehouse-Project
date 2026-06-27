@@ -231,7 +231,6 @@ class RobotAgent:
             and len(robot.path) <= 1
         )
 
-        # Check if next move would be blocked
         if len(robot.path) > 1 and collision_manager is not None:
             next_x, next_y = robot.path[1]
             self.beliefs["path_blocked"] = (
@@ -256,6 +255,9 @@ class RobotAgent:
         """
         b = self.beliefs
         robot = self.robot
+
+        if robot.status == RobotStatus.NEGOTIATING:
+            return "negotiating"
 
         # Priority 1 — battery critical and not already charging
         if b["battery_low"] and robot.status != RobotStatus.CHARGING:
@@ -327,7 +329,12 @@ class RobotAgent:
             "pickup": self._handle_pickup,
             "deliver": self._handle_deliver,
             "idle": self._handle_idle,
+            "negotiating": self._handle_negotiating,
         }
+
+    def _handle_negotiating(self, ctx):
+        """Skip movement while waiting for LLM negotiation response."""
+        pass
 
     # ---- need_charge ----
 
@@ -410,7 +417,8 @@ class RobotAgent:
 
         next_x, next_y = robot.path[1]
 
-        if not collision_manager.reserve_cell(next_x, next_y):
+        success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
+        if not success:
             self._remember(
                 "blocked",
                 {"cell": (next_x, next_y)}
@@ -420,6 +428,17 @@ class RobotAgent:
                 MessageType.BLOCKED_PATH,
                 {"robot_id": robot.id, "cell": (next_x, next_y)}
             )
+            
+            if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING:
+                from simulation.negotiation_service import negotiation_service
+                robot.status = RobotStatus.NEGOTIATING
+                
+                def on_negotiation_complete(winner_id, reason):
+                    # Default back to IDLE so it re-decides next tick
+                    robot.status = RobotStatus.IDLE
+                    
+                negotiation_service.resolve_deadlock(robot.id, conflicting_robot_id, next_x, next_y, on_negotiation_complete)
+                
             return
 
         robot.position.x = next_x

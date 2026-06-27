@@ -515,6 +515,13 @@
                 </div>
             </div>
 
+            <!-- Negotiation Logs -->
+            <div class="card">
+                <div class="card-title">LLM Negotiation Logs</div>
+                <div id="negotiation-logs" style="font-size: 11px; max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
+                </div>
+            </div>
+
             <!-- Legend -->
             <div class="card">
                 <div class="card-title">Legend</div>
@@ -577,6 +584,7 @@
         let selectedRobotId = null;
         let previousPaths = {};
         let displayedAuctionLogs = 0;
+        let displayedNegotiationLogs = 0;
 
         // ---- Init ----
 
@@ -680,6 +688,22 @@
                 updateAuctionLogs(auctionLogs);
             } catch (e) {
                 console.error('Error fetching auction logs:', e);
+            }
+
+            try {
+                const negotiationRes = await fetch('/negotiation/logs');
+                if (!negotiationRes.ok) {
+                    throw new Error(`HTTP error! status: ${negotiationRes.status}`);
+                }
+                const negotiationLogs = await negotiationRes.json();
+                
+                if (negotiationLogs && negotiationLogs.length > displayedNegotiationLogs) {
+                    console.log(`Negotiation logs received: ${negotiationLogs.length} logs found`, negotiationLogs);
+                }
+                
+                updateNegotiationLogs(negotiationLogs);
+            } catch (e) {
+                console.error('Error fetching negotiation logs:', e);
             }
         }
 
@@ -894,6 +918,24 @@
                 container.prepend(div);
             }
             displayedAuctionLogs = logs.length;
+        }
+
+        function updateNegotiationLogs(logs) {
+            if (!logs || logs.length === displayedNegotiationLogs) return;
+            
+            const container = document.getElementById('negotiation-logs');
+            for (let i = displayedNegotiationLogs; i < logs.length; i++) {
+                const log = logs[i];
+                const div = document.createElement('div');
+                div.style.padding = '8px';
+                div.style.background = 'var(--bg-cell)';
+                div.style.borderRadius = '6px';
+                div.style.borderLeft = '3px solid var(--accent-blue)';
+                
+                div.innerHTML = `<strong>R${log.robot1} vs R${log.robot2} @ (${log.cell[0]},${log.cell[1]})</strong><br><span style="color:var(--text-secondary)">${log.reason}</span><br><strong style="color:var(--accent-green)">Yield Winner: R${log.winner}</strong>`;
+                container.prepend(div);
+            }
+            displayedNegotiationLogs = logs.length;
         }
 
         // ---- API Post Helper ----

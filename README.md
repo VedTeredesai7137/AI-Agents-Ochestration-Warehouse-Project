@@ -10,7 +10,7 @@ The system consists of:
 - A **FastAPI REST API** — exposes simulation state (robots, tasks, agents, messages), provides simulation control (step, start, pause, reset), and accepts dynamic task creation.
 - A **browser dashboard** — a Jinja2-rendered HTML/CSS/JS page at `/dashboard` that visualizes the warehouse grid in real-time by polling the API every 200ms. It features live bidding logs, agent thought streams, and path intent overlays.
 
-The simulation runs in-memory. All state lives in Python objects. There is no database, no Redis, no message queue.
+The simulation runs in-memory. All state lives in Python objects. There is no database, no Redis, no message queue. The warehouse environment (shelves, robot spawns, and tasks) is **procedurally generated** at startup and upon every simulation reset to ensure the AI agents learn to generalize their navigation and negotiation.
 
 ---
 
@@ -288,8 +288,9 @@ Warehouse Swarm Porject/
 | **TaskManager** | `task_manager.py` | Task creation, assignment, unassignment, completion on the data model. |
 | **AuctionManager** | `auction_manager.py` | **Legacy.** Retained for backward compatibility. Not used when multi-agent system is active. |
 | **AStarPathfinder** | `pathfinder.py` | A* pathfinding on the warehouse grid. |
-| **CollisionManager** | `collision_manager.py` | Per-step cell reservation. |
+| **CollisionManager** | `collision_manager.py` | Per-step cell reservation. Resolves deadlocks via LLM. |
 | **ChargingManager** | `charging_manager.py` | Nearest charging station selection. |
+| **NegotiationService** | `negotiation_service.py` | Resolves pathing deadlocks using a local LLM (Ollama/Mistral) by analyzing the conflict and reasoning about priority. |
 
 ---
 
@@ -438,9 +439,9 @@ Each RobotAgent runs this cycle once per simulation step.
 ### Warehouse Grid
 
 - **Dimensions:** 30 × 20
-- **Shelf rows:** 2, 5, 8, 11, 14, 17 (columns 2–27)
+- **Shelf rows:** Procedurally generated along rows 2, 5, 8, 11, 14, 17 with randomized gaps (85% shelf probability).
 - **Charging stations:** (0,0), (1,0), (28,0), (29,0)
-- **Robot spawn:** row 18, columns 1–5
+- **Robot spawn:** 5 random locations in the bottom half of the warehouse.
 - **Walkable:** everything except `S` (shelves)
 - **Grid access:** `grid[y][x]`
 
@@ -484,6 +485,7 @@ Each RobotAgent runs this cycle once per simulation step.
 | `GET` | `/agents/messages` | Pending messages per robot |
 | `GET` | `/tasks/agents` | Task agent CNP status |
 | `GET` | `/auction/logs` | Raw bids from recent task auctions |
+| `GET` | `/negotiation/logs` | Deadlock resolution reasons from the local LLM |
 
 ### GET /agents/status
 
@@ -542,7 +544,14 @@ Automatically creates a TaskAgent for the new task. The TaskAgent will issue a C
 ### Prerequisites
 
 - Python 3.11 (local at `python311/`)
-- Packages: `fastapi`, `uvicorn`, `pydantic`, `jinja2`
+- Packages: `fastapi`, `uvicorn`, `pydantic`, `jinja2`, `requests`
+- **Ollama** running locally on port `11434` with the `mistral` model installed (required for the LLM NegotiationService).
+
+### Start the LLM Sidecar
+Ensure Ollama is running before starting the simulation:
+```bash
+ollama run mistral
+```
 
 ### Start the API Server
 

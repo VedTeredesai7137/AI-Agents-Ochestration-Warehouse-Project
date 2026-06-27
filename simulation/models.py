@@ -27,6 +27,8 @@ class RobotStatus(str, Enum):
     CHARGING = "CHARGING"
 
     NEEDS_CHARGE = "NEEDS_CHARGE"
+    
+    NEGOTIATING = "NEGOTIATING"
 
 
 class Robot(BaseModel):

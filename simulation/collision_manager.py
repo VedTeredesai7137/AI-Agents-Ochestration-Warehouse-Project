@@ -1,7 +1,7 @@
 class CollisionManager:
 
     def __init__(self):
-        self.reserved_cells = set()
+        self.reserved_cells = {}
 
     def reset_step(self):
         self.reserved_cells.clear()
@@ -9,16 +9,15 @@ class CollisionManager:
     def reserve_cell(
         self,
         x,
-        y
+        y,
+        robot_id
     ):
 
         cell = (x, y)
 
         if cell in self.reserved_cells:
-            return False
+            return False, self.reserved_cells[cell]
 
-        self.reserved_cells.add(
-            cell
-        )
+        self.reserved_cells[cell] = robot_id
 
-        return True
+        return True, None
