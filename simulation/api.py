@@ -21,6 +21,7 @@ from simulation.simulation_engine import SimulationEngine
 from simulation.agent_manager import AgentManager
 from simulation.message_bus import MessageBus
 from simulation.task_agent_manager import TaskAgentManager
+from simulation.negotiation_service import NegotiationService
 
 
 # --- Pydantic Request Models ---
@@ -86,6 +87,8 @@ def initialize_simulation():
     task_agent_manager = TaskAgentManager(task_manager, message_bus)
     task_agent_manager.create_agents_for_existing_tasks()
 
+    negotiation_service = NegotiationService()
+
     simulation = SimulationEngine(
         robot_manager,
         collision_manager,
@@ -95,6 +98,7 @@ def initialize_simulation():
         auction_manager=auction_manager,
         agent_manager=agent_manager,
         task_agent_manager=task_agent_manager,
+        negotiation_service=negotiation_service,
     )
 
     return (
@@ -108,8 +112,10 @@ def initialize_simulation():
         agent_manager,
         message_bus,
         task_agent_manager,
+        negotiation_service,
         simulation
     )
+
 
 
 # --- Simulation Initialization ---
@@ -125,6 +131,7 @@ def initialize_simulation():
     agent_manager,
     message_bus,
     task_agent_manager,
+    negotiation_service,
     simulation
 ) = initialize_simulation()
 
@@ -242,9 +249,8 @@ def get_auction_logs():
 
 @app.get("/negotiation/logs")
 def get_negotiation_logs():
-    """Return the deadlock negotiation logs from the local LLM."""
-    from simulation.negotiation_service import negotiation_service
-    return negotiation_service.negotiation_logs
+    """Return the last 5 deadlock negotiation or auction explanation logs from the local LLM."""
+    return negotiation_service.negotiation_logs[-5:]
 
 
 # ============================
@@ -301,6 +307,7 @@ def post_simulation_reset():
     global agent_manager
     global message_bus
     global task_agent_manager
+    global negotiation_service
     global simulation
     global simulation_running
     global simulation_thread
@@ -327,6 +334,7 @@ def post_simulation_reset():
             agent_manager,
             message_bus,
             task_agent_manager,
+            negotiation_service,
             simulation
         ) = initialize_simulation()
 

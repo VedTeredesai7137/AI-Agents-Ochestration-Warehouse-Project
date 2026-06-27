@@ -697,8 +697,8 @@
                 }
                 const negotiationLogs = await negotiationRes.json();
                 
-                if (negotiationLogs && negotiationLogs.length > displayedNegotiationLogs) {
-                    console.log(`Negotiation logs received: ${negotiationLogs.length} logs found`, negotiationLogs);
+                if (negotiationLogs && negotiationLogs.length > 0) {
+                    // Log fetched successfully
                 }
                 
                 updateNegotiationLogs(negotiationLogs);
@@ -921,10 +921,12 @@
         }
 
         function updateNegotiationLogs(logs) {
-            if (!logs || logs.length === displayedNegotiationLogs) return;
+            if (!logs) return;
             
             const container = document.getElementById('negotiation-logs');
-            for (let i = displayedNegotiationLogs; i < logs.length; i++) {
+            container.innerHTML = '';
+            
+            for (let i = 0; i < logs.length; i++) {
                 const log = logs[i];
                 const div = document.createElement('div');
                 div.style.padding = '8px';
@@ -932,10 +934,16 @@
                 div.style.borderRadius = '6px';
                 div.style.borderLeft = '3px solid var(--accent-blue)';
                 
-                div.innerHTML = `<strong>R${log.robot1} vs R${log.robot2} @ (${log.cell[0]},${log.cell[1]})</strong><br><span style="color:var(--text-secondary)">${log.reason}</span><br><strong style="color:var(--accent-green)">Yield Winner: R${log.winner}</strong>`;
+                if (log.robot1 === "Auction") {
+                    div.innerHTML = `<strong>Auction Explain: ${log.robot2}</strong><br><span style="color:var(--text-secondary)">${log.reason}</span><br><strong style="color:var(--accent-green)">Winner: R${log.winner}</strong>`;
+                } else if (log.robot1 === "System") {
+                    div.innerHTML = `<strong>System: ${log.robot2} Initialized</strong><br><span style="color:var(--text-secondary)">${log.reason}</span>`;
+                } else {
+                    div.innerHTML = `<strong>R${log.robot1} vs R${log.robot2} @ (${log.cell[0]},${log.cell[1]})</strong><br><span style="color:var(--text-secondary)">${log.reason}</span><br><strong style="color:var(--accent-green)">Yield Winner: R${log.winner}</strong>`;
+                }
+                
                 container.prepend(div);
             }
-            displayedNegotiationLogs = logs.length;
         }
 
         // ---- API Post Helper ----

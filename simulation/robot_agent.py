@@ -65,8 +65,8 @@ class RobotAgent:
         self.message_bus = message_bus
         self.agent_id = f"robot_{robot.id}"
 
-        # --- cognitive state ---
-        self.goal = AgentGoal.IDLE
+        self.messages = []
+
         self.beliefs = {
             "battery_low": False,
             "has_task": False,
@@ -78,6 +78,8 @@ class RobotAgent:
             "nearby_low_battery": [],
             "nearby_blocked": [],
         }
+        self.goal = AgentGoal.IDLE
+        self.has_greeted = False
         self.memory = []
         self.current_plan = []
 
@@ -217,9 +219,10 @@ class RobotAgent:
     #  PERCEPTION — observe environment + own state
     # ------------------------------------------------------------------
 
-    def perceive(self, collision_manager=None):
+    def perceive(self, collision_manager=None, negotiation_service=None, ctx=None):
         """Update beliefs from the robot's current state."""
         robot = self.robot
+        if ctx is None: ctx = {}
 
         self.beliefs["battery_low"] = robot.battery <= 20
         self.beliefs["battery_full"] = robot.battery >= 100
@@ -238,6 +241,29 @@ class RobotAgent:
             )
         else:
             self.beliefs["path_blocked"] = False
+
+        # Check for greeting conditions
+        robot_manager = ctx.get("robot_manager")
+        if negotiation_service and robot_manager:
+            # Check nearby robots for greeting
+            for other_robot in robot_manager.robots:
+                if other_robot.id == robot.id:
+                    continue
+                dist = abs(robot.position.x - other_robot.position.x) + \
+                       abs(robot.position.y - other_robot.position.y)
+                if dist <= 2:
+                    last_greeted = self.beliefs.get("last_greeted")
+                    if last_greeted != other_robot.id:
+                        self.beliefs["last_greeted"] = other_robot.id
+                        negotiation_service.generate_greeting(robot.id, other_robot.id)
+
+            current_step = ctx.get("current_step", 6)
+            if not self.has_greeted and current_step <= 5:
+                self.has_greeted = True
+                negotiation_service.generate_initial_greeting(robot.id)
+
+    def _remember(self, event, data):
+        self.memory.append({"event": event, "data": data})
 
     # ------------------------------------------------------------------
     #  DECISION — choose the next action
@@ -429,8 +455,8 @@ class RobotAgent:
                 {"robot_id": robot.id, "cell": (next_x, next_y)}
             )
             
-            if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING:
-                from simulation.negotiation_service import negotiation_service
+            negotiation_service = ctx.get("negotiation_service")
+            if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING and negotiation_service:
                 robot.status = RobotStatus.NEGOTIATING
                 
                 def on_negotiation_complete(winner_id, reason):
@@ -569,7 +595,9 @@ class RobotAgent:
         """
         self.process_messages()
         self.perceive(
-            collision_manager=context.get("collision_manager")
+            collision_manager=context.get("collision_manager"),
+            negotiation_service=context.get("negotiation_service"),
+            ctx=context
         )
         action = self.decide()
         self.act(action, **context)

@@ -184,6 +184,14 @@ class TaskAgent:
             "bids": [{"robot_id": p["robot_id"], "bid": p["estimated_cost"]} for p in self.received_proposals],
             "winner": winner_id
         }
+
+        try:
+            from simulation.negotiation_service import negotiation_service
+            bids_str = ", ".join([f"R{p['robot_id']}: {p['estimated_cost']:.1f}" for p in self.received_proposals])
+            negotiation_service.explain_auction_winner(self.task.id, winner_id, bids_str)
+        except Exception:
+            pass
+
         return log
 
     @property

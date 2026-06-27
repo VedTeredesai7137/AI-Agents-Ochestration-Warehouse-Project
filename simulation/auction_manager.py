@@ -90,4 +90,11 @@ class AuctionManager:
             "winner": bids[0][1]
         })
 
+        try:
+            from simulation.negotiation_service import negotiation_service
+            bids_str = ", ".join([f"R{r_id}: {b:.1f}" for b, r_id in bids])
+            negotiation_service.explain_auction_winner(task.id, bids[0][1], bids_str)
+        except Exception:
+            pass
+
         return bids[0][1]

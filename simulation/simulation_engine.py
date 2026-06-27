@@ -27,7 +27,8 @@ class SimulationEngine:
         pathfinder,
         auction_manager=None,
         agent_manager=None,
-        task_agent_manager=None
+        task_agent_manager=None,
+        negotiation_service=None
     ):
         self.robot_manager = robot_manager
         self.collision_manager = collision_manager
@@ -37,6 +38,7 @@ class SimulationEngine:
         self.auction_manager = auction_manager
         self.agent_manager = agent_manager
         self.task_agent_manager = task_agent_manager
+        self.negotiation_service = negotiation_service
         self.current_step = 0
 
     # ------------------------------------------------------------------
@@ -157,10 +159,13 @@ class SimulationEngine:
 
             # 2. Tick robot agents (process messages, perceive, decide, act)
             self.agent_manager.tick_all(
+                current_step=self.current_step,
+                robot_manager=self.robot_manager,
                 task_manager=self.task_manager,
                 charging_manager=self.charging_manager,
                 pathfinder=self.pathfinder,
                 collision_manager=self.collision_manager,
+                negotiation_service=self.negotiation_service,
             )
             return
 
@@ -168,10 +173,13 @@ class SimulationEngine:
         if self.agent_manager is not None:
             self.assign_new_tasks()
             self.agent_manager.tick_all(
+                current_step=self.current_step,
+                robot_manager=self.robot_manager,
                 task_manager=self.task_manager,
                 charging_manager=self.charging_manager,
                 pathfinder=self.pathfinder,
                 collision_manager=self.collision_manager,
+                negotiation_service=self.negotiation_service,
             )
             return
 
