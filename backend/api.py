@@ -181,6 +181,14 @@ def dashboard(request: Request):
         name="dashboard.html"
     )
 
+@app.get("/OperationCentre")
+def operation_centre(request: Request):
+    """Serve the advanced AI Operations Centre dashboard."""
+    return templates.TemplateResponse(
+        request=request,
+        name="OperationCentre.html"
+    )
+
 
 @app.get("/warehouse/grid")
 def get_warehouse_grid():

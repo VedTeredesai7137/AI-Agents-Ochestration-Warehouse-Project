@@ -586,3 +586,33 @@ python311\python.exe -m uvicorn backend.api:app --reload
 - No persistence. Server restart loses all state.
 - No WebSocket support. Dashboard uses 200ms polling.
 - `AuctionManager` is retained but unused when multi-agent system is active.
+
+---
+
+## 13. AI Operations Centre
+
+An enterprise-grade advanced dashboard has been introduced alongside the original visualization to provide deep observability into the Multi-Agent System.
+
+### Access Point
+| URL | Description |
+|---|---|
+| `http://127.0.0.1:8000/OperationCentre` | AI Operations Centre |
+
+### New Files
+- `frontend/OperationCentre.html`
+- `frontend/css/OperationCentre.css`
+- `frontend/js/OperationCentre.js`
+
+### UI Features & Visualization Capabilities
+The AI Operations Centre provides a complete orchestration perspective:
+- **Responsive Grid Layout**: Modern, dark-themed, card-based interface with smooth micro-animations.
+- **Top Header**: Real-time simulation status, active connection indicator, and high-level agent/task counts.
+- **Enhanced Warehouse Visualization**: Improved CSS-grid representation of the warehouse, displaying agent IDs, dynamic battery levels via tooltips, and color-coded status animations (e.g., pulsing when negotiating).
+- **Agent Inspector**: Interactive panel that displays the internal cognitive state (current goal, active task, local beliefs, pending message count, and memory event count) of any robot clicked on the grid.
+- **Live Message Bus**: A real-time scrolling feed of inter-agent communications (CFPs, Proposals, Awards, Blocked Paths) with payload previews and type-specific color coding.
+- **Auction Monitor**: Live tracking of Contract Net Protocol (CNP) auctions, listing all bids and identifying the winning robot and estimated cost.
+- **Negotiation Logs**: Deep dive into LLM-driven conflict resolution, displaying the deadlock participants, timestamp, the LLM's reasoning, and its final decision.
+- **Live Metrics**: Computed metrics for completed tasks, average swarm battery level, moving/idle breakdown, and total messages processed.
+
+### Note for Recruiters & Reviewers
+The **AI Operations Centre** perfectly demonstrates an ability to build professional, enterprise-level observability tooling. It highlights proficiency in full-stack integration (FastAPI + Vanilla JS/CSS), real-time DOM manipulation, UI/UX design (dark mode, layout grids, animations), and the capacity to visualize complex backend AI state (message passing and LLM negotiations) in an accessible, visually impressive manner.

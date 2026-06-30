@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warehouse Swarm AI Operations Centre</title>
+    <link href="{{ url_for('static', path='css/OperationCentre.css') }}" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="top-header">
+        <div class="header-left">
+            <h1>Warehouse Swarm AI Operations Centre</h1>
+            <div class="status-indicator">
+                <span class="dot connected-dot"></span>
+                <span id="connection-status">Connected</span>
+            </div>
+        </div>
+        <div class="header-stats">
+            <div class="stat-badge">Status: <span id="header-sim-status" class="value">Running</span></div>
+            <div class="stat-badge">Step: <span id="header-step" class="value">0</span></div>
+            <div class="stat-badge">Refresh: <span id="header-refresh" class="value">200ms</span></div>
+            <div class="stat-badge">Robots: <span id="header-robots" class="value">0</span></div>
+            <div class="stat-badge">Tasks: <span id="header-tasks" class="value">0</span></div>
+        </div>
+    </header>
+
+    <main class="dashboard-grid">
+        <!-- LEFT: Warehouse Visualization -->
+        <section class="panel warehouse-panel">
+            <div class="panel-header">
+                <h2>Warehouse Visualization</h2>
+            </div>
+            <div class="panel-content">
+                <div id="grid-container" class="grid-container"></div>
+            </div>
+        </section>
+
+        <!-- CENTER: Agent Inspector -->
+        <section class="panel inspector-panel">
+            <div class="panel-header">
+                <h2>Agent Inspector</h2>
+                <span class="subtitle">Click a robot to inspect</span>
+            </div>
+            <div class="panel-content" id="agent-inspector-content">
+                <div class="empty-state">No agent selected</div>
+            </div>
+        </section>
+
+        <!-- RIGHT: Live Message Bus -->
+        <section class="panel message-bus-panel">
+            <div class="panel-header">
+                <h2>Live Message Bus</h2>
+            </div>
+            <div class="panel-content" id="message-bus-content">
+                <!-- Messages will be appended here -->
+            </div>
+        </section>
+    </main>
+
+    <footer class="bottom-panels">
+        <!-- Auction Monitor -->
+        <section class="panel bottom-panel">
+            <div class="panel-header">
+                <h2>Auction Monitor</h2>
+            </div>
+            <div class="panel-content" id="auction-content">
+            </div>
+        </section>
+
+        <!-- Metrics -->
+        <section class="panel bottom-panel">
+            <div class="panel-header">
+                <h2>Metrics</h2>
+            </div>
+            <div class="panel-content metrics-grid" id="metrics-content">
+                <!-- Metrics populated by JS -->
+            </div>
+        </section>
+
+        <!-- Negotiation Logs -->
+        <section class="panel bottom-panel">
+            <div class="panel-header">
+                <h2>Negotiation Logs</h2>
+            </div>
+            <div class="panel-content" id="negotiation-content">
+            </div>
+        </section>
+    </footer>
+
+    <script src="{{ url_for('static', path='js/OperationCentre.js') }}"></script>
+</body>
+</html>
