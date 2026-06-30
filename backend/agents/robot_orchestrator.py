@@ -8,7 +8,7 @@ Responsibilities:
   - Run the per-step tick cycle for every agent.
 """
 
-from simulation.robot_agent import RobotAgent
+from backend.agents.robot import RobotAgent
 
 
 class AgentManager:

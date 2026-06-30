@@ -12,7 +12,7 @@ The TaskAgent does NOT directly modify Robot state — it communicates
 through the MessageBus and lets the winning RobotAgent accept the contract.
 """
 
-from simulation.message_bus import MessageType
+from backend.agents.message_bus import MessageType
 
 
 class TaskAgentStatus:
@@ -186,7 +186,7 @@ class TaskAgent:
         }
 
         try:
-            from simulation.negotiation_service import negotiation_service
+            from backend.agents.negotiation import negotiation_service
             bids_str = ", ".join([f"R{p['robot_id']}: {p['estimated_cost']:.1f}" for p in self.received_proposals])
             negotiation_service.explain_auction_winner(self.task.id, winner_id, bids_str)
         except Exception:

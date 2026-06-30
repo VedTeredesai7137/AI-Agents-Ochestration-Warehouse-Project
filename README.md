@@ -23,7 +23,7 @@ Browser Dashboard (HTML/CSS/JS)
        │
        │ HTTP (fetch every 200ms)
        ▼
-FastAPI REST API (simulation/api.py)
+FastAPI REST API (backend/api.py)
        │
        │ direct Python method calls
        ▼
@@ -178,7 +178,7 @@ If a robot releases a task (e.g., battery low), the TaskAgent detects `assigned_
 
 ### MessageBus
 
-File: `simulation/message_bus.py`
+File: `backend/message_bus.py`
 
 An in-memory publish/subscribe system supporting:
 - **Direct messaging**: `publish(message)` delivers to a specific recipient's inbox.
@@ -250,47 +250,54 @@ RobotAgents process incoming messages:
 Warehouse Swarm Porject/
 ├── README.md
 ├── python311/                        # Local Python 3.11
-├── simulation/
-│   ├── __init__.py                   # Package marker
-│   ├── api.py                        # FastAPI app with multi-agent integration
-│   ├── agent_manager.py              # Manages RobotAgent instances
-│   ├── auction_manager.py            # Legacy centralized auction (kept for compat)
-│   ├── charging_manager.py           # Charging station selection
-│   ├── collision_manager.py          # Per-step collision avoidance
-│   ├── constants.py                  # Shared constants (unused)
+├── backend/
+│   ├── __init__.py
+│   ├── api.py                        # FastAPI app with MAS integration
 │   ├── main.py                       # Console simulation runner
-│   ├── message_bus.py                # In-memory agent communication bus
-│   ├── models.py                     # Pydantic models (Robot, Position, RobotStatus)
-│   ├── pathfinder.py                 # A* pathfinding
-│   ├── robot_agent.py                # Autonomous robot agent (perceive-decide-act + CNP)
-│   ├── robot_manager.py              # Robot lifecycle management
-│   ├── simulation_engine.py          # Orchestration engine (no decision authority)
-│   ├── task_agent.py                 # Autonomous task agent (CNP lifecycle)
-│   ├── task_agent_manager.py         # Manages TaskAgent instances
-│   ├── task_manager.py               # Task data management
-│   ├── warehouse.py                  # Grid generation
-│   └── templates/
-│       └── dashboard.html            # Browser visualization
+│   ├── core/                         # Base schemas and configurations
+│   │   ├── models.py
+│   │   └── constants.py
+│   ├── state/                        # In-memory storage managers
+│   │   ├── robot_state.py
+│   │   └── task_state.py
+│   ├── simulation/                   # Physics and environment
+│   │   ├── engine.py
+│   │   ├── warehouse.py
+│   │   ├── pathfinder.py
+│   │   ├── collision.py
+│   │   └── charging.py
+│   └── agents/                       # Multi-Agent System (MAS)
+│       ├── robot.py
+│       ├── task.py
+│       ├── robot_orchestrator.py
+│       ├── task_orchestrator.py
+│       ├── message_bus.py
+│       └── negotiation.py
+└── frontend/
+    ├── css/
+    │   └── dashboard.css             # Stylesheet for live dashboard
+    ├── dashboard.html                # Browser visualization template
+    └── js/
+        └── dashboard.js              # Live dashboard interaction scripts
 ```
 
 ### Component Responsibilities
 
 | Component | File | Responsibility |
 |---|---|---|
-| **MessageBus** | `message_bus.py` | In-memory pub/sub for agent communication |
-| **RobotAgent** | `robot_agent.py` | Autonomous robot: perceive → process messages → decide → act. Responds to CFPs with proposals. Broadcasts events. |
-| **TaskAgent** | `task_agent.py` | Autonomous task: issues CFPs, collects proposals, awards contracts. Manages CNP lifecycle. |
-| **AgentManager** | `agent_manager.py` | Creates and ticks all RobotAgent instances. |
-| **TaskAgentManager** | `task_agent_manager.py` | Creates and ticks all TaskAgent instances. Creates TaskAgents for dynamically added tasks. |
-| **SimulationEngine** | `simulation_engine.py` | Orchestration only: increments step, resets collisions, ticks task agents, ticks robot agents. No decision authority. |
-| **Warehouse** | `warehouse.py` | 30×20 grid with shelves, aisles, chargers, spawn area. |
-| **RobotManager** | `robot_manager.py` | Robot creation, spawning, lookup, task assignment on the data model. |
-| **TaskManager** | `task_manager.py` | Task creation, assignment, unassignment, completion on the data model. |
-| **AuctionManager** | `auction_manager.py` | **Legacy.** Retained for backward compatibility. Not used when multi-agent system is active. |
-| **AStarPathfinder** | `pathfinder.py` | A* pathfinding on the warehouse grid. |
-| **CollisionManager** | `collision_manager.py` | Per-step cell reservation. Resolves deadlocks via LLM. |
-| **ChargingManager** | `charging_manager.py` | Nearest charging station selection. |
-| **NegotiationService** | `negotiation_service.py` | Resolves pathing deadlocks using a local LLM (Ollama/Mistral) by analyzing the conflict and reasoning about priority. |
+| **MessageBus** | `agents/message_bus.py` | In-memory pub/sub for agent communication |
+| **RobotAgent** | `agents/robot.py` | Autonomous robot: perceive → process messages → decide → act. Responds to CFPs with proposals. Broadcasts events. |
+| **TaskAgent** | `agents/task.py` | Autonomous task: issues CFPs, collects proposals, awards contracts. Manages CNP lifecycle. |
+| **RobotOrchestrator** | `agents/robot_orchestrator.py` | Creates and ticks all RobotAgent instances. |
+| **TaskOrchestrator** | `agents/task_orchestrator.py` | Creates and ticks all TaskAgent instances. Creates TaskAgents for dynamically added tasks. |
+| **SimulationEngine** | `simulation/engine.py` | Orchestration only: increments step, resets collisions, ticks task agents, ticks robot agents. No decision authority. |
+| **Warehouse** | `simulation/warehouse.py` | 30×20 grid with shelves, aisles, chargers, spawn area. |
+| **RobotState** | `state/robot_state.py` | Robot creation, spawning, lookup, task assignment on the data model. |
+| **TaskState** | `state/task_state.py` | Task creation, assignment, unassignment, completion on the data model. |
+| **AStarPathfinder** | `simulation/pathfinder.py` | A* pathfinding on the warehouse grid. |
+| **CollisionManager** | `simulation/collision.py` | Per-step cell reservation. Resolves deadlocks via LLM. |
+| **ChargingManager** | `simulation/charging.py` | Nearest charging station selection. |
+| **NegotiationService** | `agents/negotiation.py` | Resolves pathing deadlocks using a local LLM (Ollama/Mistral) by analyzing the conflict and reasoning about priority. |
 
 ---
 
@@ -556,7 +563,7 @@ ollama run mistral
 ### Start the API Server
 
 ```bash
-python311\python.exe -m uvicorn simulation.api:app --reload
+python311\python.exe -m uvicorn backend.api:app --reload
 ```
 
 ### Access Points

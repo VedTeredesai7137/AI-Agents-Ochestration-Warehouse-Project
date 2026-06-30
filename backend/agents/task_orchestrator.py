@@ -8,7 +8,7 @@ Responsibilities:
   - Provide introspection data for the API.
 """
 
-from simulation.task_agent import TaskAgent, TaskAgentStatus
+from backend.agents.task import TaskAgent, TaskAgentStatus
 
 
 class TaskAgentManager:

@@ -4,16 +4,16 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from simulation.warehouse import Warehouse
-from simulation.robot_manager import RobotManager
-from simulation.pathfinder import AStarPathfinder
-from simulation.task_manager import TaskManager
-from simulation.collision_manager import CollisionManager
-from simulation.charging_manager import ChargingManager
-from simulation.simulation_engine import SimulationEngine
-from simulation.agent_manager import AgentManager
-from simulation.message_bus import MessageBus
-from simulation.task_agent_manager import TaskAgentManager
+from backend.simulation.warehouse import Warehouse
+from backend.state.robot_state import RobotManager
+from backend.simulation.pathfinder import AStarPathfinder
+from backend.state.task_state import TaskManager
+from backend.simulation.collision import CollisionManager
+from backend.simulation.charging import ChargingManager
+from backend.simulation.engine import SimulationEngine
+from backend.agents.robot_orchestrator import AgentManager
+from backend.agents.message_bus import MessageBus
+from backend.agents.task_orchestrator import TaskAgentManager
 
 
 def main():
