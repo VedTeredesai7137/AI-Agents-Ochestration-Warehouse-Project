@@ -25,7 +25,6 @@ class SimulationEngine:
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager=None,
         agent_manager=None,
         task_agent_manager=None,
         negotiation_service=None
@@ -35,7 +34,6 @@ class SimulationEngine:
         self.task_manager = task_manager
         self.charging_manager = charging_manager
         self.pathfinder = pathfinder
-        self.auction_manager = auction_manager
         self.agent_manager = agent_manager
         self.task_agent_manager = task_agent_manager
         self.negotiation_service = negotiation_service
@@ -48,15 +46,33 @@ class SimulationEngine:
 
     def assign_new_tasks(self):
         """Centralized auction fallback (used only if no task_agent_manager)."""
-        if self.auction_manager is None:
-            return
-
         for task in self.task_manager.get_unassigned_tasks():
+            bids = []
+            for robot in self.robot_manager.robots:
+                if robot.current_task is not None:
+                    continue
+                if robot.battery < 30:
+                    continue
+                distance = (
+                    abs(robot.position.x - task.pickup_x)
+                    + abs(robot.position.y - task.pickup_y)
+                )
+                battery_penalty = (100 - robot.battery) * 0.1
+                bid = distance + battery_penalty
+                bids.append((bid, robot.id))
 
-            winner = self.auction_manager.run_auction(task)
-
-            if winner is None:
+            if not bids:
                 continue
+
+            bids.sort()
+            winner = bids[0][1]
+
+            try:
+                if self.negotiation_service is not None:
+                    bids_str = ", ".join([f"R{r_id}: {b:.1f}" for b, r_id in bids])
+                    self.negotiation_service.explain_auction_winner(task.id, winner, bids_str)
+            except Exception:
+                pass
 
             robot = self.robot_manager.get_robot(winner)
 

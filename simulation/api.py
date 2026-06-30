@@ -16,7 +16,6 @@ from simulation.robot_manager import RobotManager
 from simulation.pathfinder import AStarPathfinder
 from simulation.task_manager import TaskManager
 from simulation.collision_manager import CollisionManager
-from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
 from simulation.agent_manager import AgentManager
@@ -46,8 +45,6 @@ def initialize_simulation():
       TaskAgentManager issues CFPs and awards contracts.
       AgentManager drives robot perceive-decide-act cycles.
       SimulationEngine orchestrates ticks without making decisions.
-      AuctionManager is retained for backward compatibility but is
-      NOT used for task allocation when the multi-agent system is active.
     """
 
     warehouse = Warehouse(width=30, height=20)
@@ -77,8 +74,6 @@ def initialize_simulation():
 
     charging_manager = ChargingManager()
 
-    auction_manager = AuctionManager(robot_manager)
-
     # --- Multi-Agent System ---
     message_bus = MessageBus()
 
@@ -96,7 +91,6 @@ def initialize_simulation():
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager=auction_manager,
         agent_manager=agent_manager,
         task_agent_manager=task_agent_manager,
         negotiation_service=negotiation_service,
@@ -109,7 +103,6 @@ def initialize_simulation():
         pathfinder,
         collision_manager,
         charging_manager,
-        auction_manager,
         agent_manager,
         message_bus,
         task_agent_manager,
@@ -128,7 +121,6 @@ def initialize_simulation():
     pathfinder,
     collision_manager,
     charging_manager,
-    auction_manager,
     agent_manager,
     message_bus,
     task_agent_manager,
@@ -306,7 +298,6 @@ def post_simulation_reset():
     global pathfinder
     global collision_manager
     global charging_manager
-    global auction_manager
     global agent_manager
     global message_bus
     global task_agent_manager
@@ -333,7 +324,6 @@ def post_simulation_reset():
             pathfinder,
             collision_manager,
             charging_manager,
-            auction_manager,
             agent_manager,
             message_bus,
             task_agent_manager,

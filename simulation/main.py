@@ -9,7 +9,6 @@ from simulation.robot_manager import RobotManager
 from simulation.pathfinder import AStarPathfinder
 from simulation.task_manager import TaskManager
 from simulation.collision_manager import CollisionManager
-from simulation.auction_manager import AuctionManager
 from simulation.charging_manager import ChargingManager
 from simulation.simulation_engine import SimulationEngine
 from simulation.agent_manager import AgentManager
@@ -36,7 +35,6 @@ def main():
     pathfinder = AStarPathfinder(warehouse)
     collision_manager = CollisionManager()
     charging_manager = ChargingManager()
-    auction_manager = AuctionManager(robot_manager)
 
     # --- Multi-Agent System ---
     message_bus = MessageBus()
@@ -53,7 +51,6 @@ def main():
         task_manager,
         charging_manager,
         pathfinder,
-        auction_manager=auction_manager,
         agent_manager=agent_manager,
         task_agent_manager=task_agent_manager,
     )
