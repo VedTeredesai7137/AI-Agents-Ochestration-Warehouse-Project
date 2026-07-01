@@ -18,7 +18,7 @@ from backend.agents.task_orchestrator import TaskAgentManager
 
 def main():
 
-    warehouse = Warehouse(width=30, height=20)
+    warehouse = Warehouse(width=50, height=30)
     warehouse.generate()
 
     robot_manager = RobotManager()

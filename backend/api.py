@@ -47,7 +47,7 @@ def initialize_simulation():
       SimulationEngine orchestrates ticks without making decisions.
     """
 
-    warehouse = Warehouse(width=30, height=20)
+    warehouse = Warehouse(width=50, height=30)
     warehouse.generate()
 
     robot_manager = RobotManager()
@@ -63,7 +63,7 @@ def initialize_simulation():
             if warehouse.grid[y][x] == ".":
                 return x, y
 
-    for _ in range(5):
+    for _ in range(35):
         px, py = get_random_walkable()
         dx, dy = get_random_walkable()
         task_manager.create_task(px, py, dx, dy)

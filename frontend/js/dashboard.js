@@ -50,6 +50,11 @@ function buildGrid() {
     container.style.gridTemplateColumns = `repeat(${gridWidth}, 34px)`;
     container.innerHTML = '';
     cells = [];
+    
+    const titleEl = document.getElementById('grid-title');
+    if (titleEl) {
+        titleEl.textContent = `Warehouse Grid (${gridWidth} × ${gridHeight})`;
+    }
 
     for (let y = 0; y < gridHeight; y++) {
         const row = [];
@@ -257,9 +262,14 @@ function drawPaths(robots) {
     if (!svg) return;
     svg.innerHTML = '';
     
-    const container = document.getElementById('grid');
-    svg.style.width = container.scrollWidth + 'px';
-    svg.style.height = container.scrollHeight + 'px';
+    // Explicitly define SVG scale via grid dimensions (34px cell + 2px gap + padding)
+    const w = 6 + (gridWidth * 36);
+    const h = 6 + (gridHeight * 36);
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', h);
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.style.width = w + 'px';
+    svg.style.height = h + 'px';
 
     for (const robot of robots) {
         if (!robot.path || robot.path.length < 1) continue;

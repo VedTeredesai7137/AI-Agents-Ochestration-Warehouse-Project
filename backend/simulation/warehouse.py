@@ -29,16 +29,27 @@ class Warehouse:
     def add_robot_spawn_area(self):
         import random
         spawned = 0
-        while spawned < 5:
+        while spawned < 25:
             row = random.randint(self.height // 2, self.height - 2)
             col = random.randint(1, self.width - 2)
             if self.grid[row][col] == ".":
                 self.grid[row][col] = "R"
                 spawned += 1
 
+    def add_pillars(self):
+        import random
+        pillars = 0
+        while pillars < 10:
+            row = random.randint(1, self.height - 2)
+            col = random.randint(1, self.width - 2)
+            if self.grid[row][col] == ".":
+                self.grid[row][col] = "S"
+                pillars += 1
+
     def generate(self):
         self.create_empty_grid()
         self.add_shelves()
+        self.add_pillars()
         self.add_charging_stations()
         self.add_robot_spawn_area()
 

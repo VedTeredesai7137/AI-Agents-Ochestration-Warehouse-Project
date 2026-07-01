@@ -437,11 +437,13 @@ class RobotAgent:
         """Attempt to move one step along the current path."""
         robot = self.robot
         collision_manager = ctx["collision_manager"]
+        pathfinder = ctx["pathfinder"]
 
         if len(robot.path) <= 1:
             return
 
         next_x, next_y = robot.path[1]
+
 
         success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
         if not success:

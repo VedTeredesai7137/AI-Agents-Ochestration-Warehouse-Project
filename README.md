@@ -445,11 +445,12 @@ Each RobotAgent runs this cycle once per simulation step.
 
 ### Warehouse Grid
 
-- **Dimensions:** 30 × 20
-- **Shelf rows:** Procedurally generated along rows 2, 5, 8, 11, 14, 17 with randomized gaps (85% shelf probability).
-- **Charging stations:** (0,0), (1,0), (28,0), (29,0)
-- **Robot spawn:** 5 random locations in the bottom half of the warehouse.
-- **Walkable:** everything except `S` (shelves)
+- **Dimensions:** 50 × 30
+- **Shelf rows:** Procedurally generated with randomized gaps (85% shelf probability).
+- **Charging stations:** (0,0), (1,0), (48,0), (49,0)
+- **Pillars:** 10 randomly placed isolated structural pillar blocks ("S") in aisles to create bottlenecks.
+- **Robot spawn:** 25 random locations in the bottom half of the warehouse.
+- **Walkable:** everything except `S` (shelves and pillars)
 - **Grid access:** `grid[y][x]`
 
 ### A* Pathfinding
@@ -625,6 +626,10 @@ The **AI Operations Centre** perfectly demonstrates an ability to build professi
 To ensure robustness during local inference (e.g., running `mistral` via Ollama on consumer hardware), **all LLM request timeouts must be configured to at least 60 seconds**.
 - **Important Note for AI Models**: Any future modification to the negotiation or social greeting LLM calls must preserve the `timeout=60.0` configuration on all HTTP requests (e.g., `requests.post`). Using small/default timeouts (like 5.0 seconds) will cause `ReadTimeout` exceptions when the local model takes time to initialize or generate responses.
 
-### Schema Alignment & Fallback Logging
+### Pathfinding Enforcement
+- **Orthogonal Strictness**: The `AStarPathfinder` strictly enforces orthogonal movement. Robots perform immediate collision verification before each step against static obstacles. Any path attempting to clip through `S` (Shelf or Pillar) blocks is instantly aborted.
+
+### Concurrency Throttling & Fallback Logging
+- **LLM Busy States**: The `NegotiationService` implements a non-blocking `threading.Lock()` to prevent concurrency spam. If multiple robots trigger deadlocks simultaneously or request social greetings at scale (e.g., 25 robots at step 1), only one request is routed to the local LLM. The remainder instantly fallback to deterministic rule-sets (e.g., lower ID yields) without blocking or queuing.
 - **Log Schema**: The negotiation and social logs returned by the API `/negotiation/logs` must match the schema expected by the AI Operations Centre frontend (`event`, `timestamp`, `reasoning`, `decision`). Mismatches will cause the frontend JavaScript to throw a `TypeError` and crash the dashboard polling loop.
 - **Fail-safe Logging**: If the LLM is offline or unreachable, the service must write a fallback log entry with error details rather than failing silently, ensuring UI dashboard stability and observability.
