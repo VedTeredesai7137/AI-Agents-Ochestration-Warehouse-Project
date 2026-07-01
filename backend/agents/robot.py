@@ -242,7 +242,12 @@ class RobotAgent:
         else:
             self.beliefs["path_blocked"] = False
 
-        # Check for greeting conditions
+        # Initial greeting when simulation/agent starts, regardless of step or other conditions
+        if negotiation_service and not self.has_greeted:
+            self.has_greeted = True
+            negotiation_service.generate_initial_greeting(robot.id)
+
+        # Check for greeting conditions when passing by other robots
         robot_manager = ctx.get("robot_manager")
         if negotiation_service and robot_manager:
             # Check nearby robots for greeting
@@ -256,11 +261,6 @@ class RobotAgent:
                     if last_greeted != other_robot.id:
                         self.beliefs["last_greeted"] = other_robot.id
                         negotiation_service.generate_greeting(robot.id, other_robot.id)
-
-            current_step = ctx.get("current_step", 6)
-            if not self.has_greeted and current_step <= 5:
-                self.has_greeted = True
-                negotiation_service.generate_initial_greeting(robot.id)
 
     def _remember(self, event, data):
         self.memory.append({"event": event, "data": data})

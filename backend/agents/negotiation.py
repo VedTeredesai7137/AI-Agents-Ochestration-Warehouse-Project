@@ -64,7 +64,11 @@ class NegotiationService:
                 "robot2": robot2_id,
                 "cell": (cell_x, cell_y),
                 "winner": winner,
-                "reason": reason
+                "reason": reason,
+                "event": f"Deadlock: R{robot1_id} vs R{robot2_id}",
+                "timestamp": time.time(),
+                "reasoning": reason,
+                "decision": f"R{winner} passes"
             }
             self.negotiation_logs.append(log_entry)
             
@@ -112,7 +116,11 @@ class NegotiationService:
                 "robot2": f"T{task_id}",
                 "cell": (0, 0),
                 "winner": winner_id,
-                "reason": reason
+                "reason": reason,
+                "event": f"Auction Task {task_id}",
+                "timestamp": time.time(),
+                "reasoning": reason,
+                "decision": f"R{winner_id} won"
             }
             self.negotiation_logs.append(log_entry)
             
@@ -129,7 +137,7 @@ class NegotiationService:
                 "stream": False
             }
             try:
-                response = requests.post(self.url, json=payload, timeout=5.0)
+                response = requests.post(self.url, json=payload, timeout=60.0)
                 response.raise_for_status()
                 data = response.json()
                 raw_response = data.get("response", "{}")
@@ -141,11 +149,29 @@ class NegotiationService:
                 log_entry = {
                     "robot1": f"R{robot_id}",
                     "robot2": f"R{target_id}",
-                    "greeting": greeting
+                    "greeting": greeting,
+                    "event": f"Greeting: R{robot_id} to R{target_id}",
+                    "timestamp": time.time(),
+                    "reasoning": "Passing by each other",
+                    "decision": greeting
                 }
                 self.social_logs.append(log_entry)
+                self.negotiation_logs.append(log_entry)
             except Exception as e:
-                pass
+                err_msg = f"LLM Error: {e}"
+                print(f"[SOCIAL GREETING ERROR] {err_msg}")
+                fallback_greeting = "Beep boop, hello! (LLM Offline)"
+                log_entry = {
+                    "robot1": f"R{robot_id}",
+                    "robot2": f"R{target_id}",
+                    "greeting": fallback_greeting,
+                    "event": f"Greeting: R{robot_id} to R{target_id}",
+                    "timestamp": time.time(),
+                    "reasoning": err_msg,
+                    "decision": fallback_greeting
+                }
+                self.social_logs.append(log_entry)
+                self.negotiation_logs.append(log_entry)
                 
         threading.Thread(target=task, daemon=True).start()
 
@@ -174,11 +200,29 @@ class NegotiationService:
                     "robot2": f"R{robot_id}",
                     "cell": (0, 0),
                     "winner": robot_id,
-                    "reason": greeting
+                    "reason": greeting,
+                    "event": f"Initial Greeting R{robot_id}",
+                    "timestamp": time.time(),
+                    "reasoning": greeting,
+                    "decision": "Greeting generated"
                 }
                 self.negotiation_logs.append(log_entry)
             except Exception as e:
-                print(f"[GREETING ERROR] {e}")
+                err_msg = f"LLM Error: {e}. Ensure Ollama is running on localhost:11434 and model '{self.model}' is pulled."
+                print(f"[GREETING ERROR] {err_msg}")
+                fallback_greeting = "Beep boop. Swarm activated. (LLM Offline)"
+                log_entry = {
+                    "robot1": "System",
+                    "robot2": f"R{robot_id}",
+                    "cell": (0, 0),
+                    "winner": robot_id,
+                    "reason": fallback_greeting,
+                    "event": f"Initial Greeting R{robot_id}",
+                    "timestamp": time.time(),
+                    "reasoning": err_msg,
+                    "decision": fallback_greeting
+                }
+                self.negotiation_logs.append(log_entry)
                 
         threading.Thread(target=task, daemon=True).start()
 

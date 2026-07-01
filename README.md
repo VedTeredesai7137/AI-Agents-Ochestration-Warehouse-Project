@@ -616,3 +616,15 @@ The AI Operations Centre provides a complete orchestration perspective:
 
 ### Note for Recruiters & Reviewers
 The **AI Operations Centre** perfectly demonstrates an ability to build professional, enterprise-level observability tooling. It highlights proficiency in full-stack integration (FastAPI + Vanilla JS/CSS), real-time DOM manipulation, UI/UX design (dark mode, layout grids, animations), and the capacity to visualize complex backend AI state (message passing and LLM negotiations) in an accessible, visually impressive manner.
+
+---
+
+## 14. LLM Configuration & Bug Resolution Notes
+
+### Crucial Timeout Configuration
+To ensure robustness during local inference (e.g., running `mistral` via Ollama on consumer hardware), **all LLM request timeouts must be configured to at least 60 seconds**.
+- **Important Note for AI Models**: Any future modification to the negotiation or social greeting LLM calls must preserve the `timeout=60.0` configuration on all HTTP requests (e.g., `requests.post`). Using small/default timeouts (like 5.0 seconds) will cause `ReadTimeout` exceptions when the local model takes time to initialize or generate responses.
+
+### Schema Alignment & Fallback Logging
+- **Log Schema**: The negotiation and social logs returned by the API `/negotiation/logs` must match the schema expected by the AI Operations Centre frontend (`event`, `timestamp`, `reasoning`, `decision`). Mismatches will cause the frontend JavaScript to throw a `TypeError` and crash the dashboard polling loop.
+- **Fail-safe Logging**: If the LLM is offline or unreachable, the service must write a fallback log entry with error details rather than failing silently, ensuring UI dashboard stability and observability.
