@@ -223,7 +223,7 @@ def get_robots():
             "battery": robot.battery,
             "status": robot.status.value,
             "current_task": robot.current_task,
-            "path": [{"x": p[0], "y": p[1]} for p in robot.path] if robot.path else []
+            "path": [[p[0], p[1]] for p in robot.path] if robot.path else []
         }
         for robot in robot_manager.robots
     ]

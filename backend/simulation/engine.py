@@ -182,6 +182,7 @@ class SimulationEngine:
                 pathfinder=self.pathfinder,
                 collision_manager=self.collision_manager,
                 negotiation_service=self.negotiation_service,
+                warehouse=self.pathfinder.warehouse,
             )
             return
 
@@ -196,6 +197,7 @@ class SimulationEngine:
                 pathfinder=self.pathfinder,
                 collision_manager=self.collision_manager,
                 negotiation_service=self.negotiation_service,
+                warehouse=self.pathfinder.warehouse,
             )
             return
 

@@ -1,8 +1,8 @@
 // ---- State ----
 
 let gridData = null;
-let gridWidth = 30;
-let gridHeight = 20;
+let gridWidth = 50;
+let gridHeight = 30;
 let cells = [];
 let selectedRobotId = null;
 let previousPaths = {};
@@ -286,8 +286,8 @@ function drawPaths(robots) {
             if (prevArr.length > 0 && robot.path.length > 0) {
                 const prevDest = prevArr[prevArr.length - 1];
                 const currDest = robot.path[robot.path.length - 1];
-                if (prevDest.x === currDest.x && prevDest.y === currDest.y) {
-                    if (prevArr.length <= robot.path.length || (prevArr.length > 1 && prevArr[1].x !== robot.path[0].x)) {
+                if (prevDest[0] === currDest[0] && prevDest[1] === currDest[1]) {
+                    if (prevArr.length <= robot.path.length || (prevArr.length > 1 && prevArr[1][0] !== robot.path[0][0])) {
                         recalculated = true;
                     }
                 }
@@ -302,8 +302,8 @@ function drawPaths(robots) {
 
         for (let i = 0; i < robot.path.length; i++) {
             const p = robot.path[i];
-            let cx = 21 + 36 * p.x;
-            let cy = 21 + 36 * p.y;
+            let cx = 21 + 36 * p[0];
+            let cy = 21 + 36 * p[1];
             d += `L ${cx} ${cy} `;
         }
 

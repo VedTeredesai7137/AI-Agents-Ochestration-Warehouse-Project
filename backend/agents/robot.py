@@ -443,7 +443,12 @@ class RobotAgent:
             return
 
         next_x, next_y = robot.path[1]
-
+        
+        warehouse = ctx.get("warehouse")
+        if warehouse and not warehouse.is_walkable(next_x, next_y):
+            robot.path = []  # Clear broken path
+            self._remember("path_invalidated", {"cell": (next_x, next_y)})
+            return
 
         success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
         if not success:
