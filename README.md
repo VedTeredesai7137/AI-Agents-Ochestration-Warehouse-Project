@@ -455,8 +455,10 @@ Each RobotAgent runs this cycle once per simulation step.
 
 ### A* Pathfinding
 
-- Manhattan heuristic, heap-based open set, uniform edge cost (1).
-- Returns list of `(x, y)` tuples from start to goal inclusive, or `[]` if no path.
+- Manhattan heuristic, heap-based open set, uniform edge cost (1), **explicit closed set** to prevent stale node re-expansion.
+- **Pre-validation**: start and goal cells are checked for walkability before search begins.
+- **Post-validation**: `_validate_path_integrity()` verifies every cell in the returned path is walkable and all consecutive steps are exactly 1 orthogonal move apart. Invalid paths are rejected and return `[]`.
+- Returns list of `(x, y)` tuples from start to goal inclusive, or `[]` if no valid path.
 
 ### Collision Avoidance
 
@@ -579,7 +581,6 @@ python311\python.exe -m uvicorn backend.api:app --reload
 
 ## 12. Known Limitations
 
-- No explicit closed set in A*. Relies on `g_score` for pruning.
 - Collision avoidance is step-local only. No multi-step path reservation.
 - `path.pop(0)` is O(n). Acceptable at current scale.
 - Print-based logging. Will pollute API server logs.
@@ -633,3 +634,90 @@ To ensure robustness during local inference (e.g., running `mistral` via Ollama 
 - **LLM Busy States**: The `NegotiationService` implements a non-blocking `threading.Lock()` to prevent concurrency spam. If multiple robots trigger deadlocks simultaneously or request social greetings at scale (e.g., 25 robots at step 1), only one request is routed to the local LLM. The remainder instantly fallback to deterministic rule-sets (e.g., lower ID yields) without blocking or queuing.
 - **Log Schema**: The negotiation and social logs returned by the API `/negotiation/logs` must match the schema expected by the AI Operations Centre frontend (`event`, `timestamp`, `reasoning`, `decision`). Mismatches will cause the frontend JavaScript to throw a `TypeError` and crash the dashboard polling loop.
 - **Fail-safe Logging**: If the LLM is offline or unreachable, the service must write a fallback log entry with error details rather than failing silently, ensuring UI dashboard stability and observability.
+
+---
+
+## 15. Obstacle Bypass Bug — Postmortem & Rules for Future Editors
+
+> **⚠️ READ THIS BEFORE EDITING PATHFINDING, ROBOT MOVEMENT, OR GRID RENDERING CODE.**
+>
+> This section documents a critical multi-layered bug that caused robots to visually clip through structural obstacles (shelves and pillars). The fix required changes across both backend and frontend. Any future modification to the files listed below **must** preserve these invariants or the bug **will** recur.
+
+### What the Bug Looked Like
+
+On the `/dashboard` page, robots appeared to walk directly through shelf cells (`S`) and pillar cells. The simulation did not crash but obstacle avoidance was visually broken.
+
+### Root Causes Found (5 bugs total)
+
+| # | Root Cause | File | Layer |
+|---|-----------|------|-------|
+| 1 | **A\* had no closed set** — stale heap entries caused node re-expansion, producing paths through unwalkable cells | `pathfinder.py` | Backend |
+| 2 | **No start/goal validation** — A\* accepted unwalkable start/goal without error | `pathfinder.py` | Backend |
+| 3 | **Only next-cell validated** — `_handle_move` checked only the immediate next cell, not the full remaining path | `robot.py` | Backend |
+| 4 | **Empty charge path not handled** — `_handle_need_charge` set status to CHARGING even with empty path, causing stuck robots | `robot.py` | Backend |
+| 5 | **Frontend grid never refreshed after Reset** — `gridData` was fetched once at page load; after `/simulation/reset`, the backend generated a new random warehouse but the dashboard still showed old shelf positions | `dashboard.js` | Frontend |
+
+Bug #5 was the **primary visual cause** — robots navigated the new grid correctly, but the dashboard displayed the old grid, making valid paths appear to cross through obstacles that no longer existed in the backend.
+
+### Fixes Applied
+
+#### `backend/simulation/pathfinder.py`
+- Added `closed_set` to A\* to prevent re-expansion of already-processed nodes.
+- Added `_validate_path_integrity()` post-search check: every cell must be walkable and consecutive cells must be exactly 1 orthogonal step apart.
+- Added pre-validation: `find_path()` immediately returns `[]` if start or goal cell is unwalkable.
+
+#### `backend/agents/robot.py`
+- `_handle_move()`: Validates **ALL** remaining cells in the path (not just the next cell). If any cell is unwalkable, logs `[OBSTACLE BYPASS DETECTED]` with full diagnostics and attempts path recomputation.
+- `_handle_need_charge()`: Checks if `charge_path` is empty before setting status to CHARGING. If no valid path exists, stays IDLE.
+- `_handle_pickup()` and `_on_arrival()`: Validates `delivery_path` is non-empty before switching. If empty, releases the task via CNP and returns to IDLE.
+
+#### `backend/agents/task.py`
+- Added diagnostic logging when pickup or delivery path computation fails during contract award.
+
+#### `frontend/js/dashboard.js`
+- Added `refreshGrid()` that re-fetches `/warehouse/grid` and rebuilds the grid DOM.
+- `apiPost()` now calls `refreshGrid()` after any `/simulation/reset` request.
+- `poll()` tracks `lastKnownStep` and auto-detects resets (step counter drops to 0) to refresh the grid even if reset was triggered externally.
+
+### Critical Rules for Future AI Editors
+
+**DO NOT** remove or weaken any of the following:
+
+1. **A\* closed set** (`pathfinder.py`): The `closed_set` in `find_path()` is mandatory. Without it, the heap can contain stale entries that cause A\* to re-expand nodes and produce paths through obstacles.
+
+2. **Path integrity validation** (`pathfinder.py`): `_validate_path_integrity()` must run on every path returned by A\*. It is the final safety net that catches any path containing unwalkable cells or non-orthogonal jumps.
+
+3. **Full remaining-path validation** (`robot.py` → `_handle_move`): The movement handler must check ALL remaining cells in `robot.path`, not just the next cell. Stale paths from prior grid states can contain future cells that are now obstacles.
+
+4. **Empty path guards** (`robot.py`): `_handle_need_charge`, `_handle_pickup`, and `_on_arrival` must all check for empty paths/delivery_paths before proceeding. Empty paths cause stuck robots or silent state corruption.
+
+5. **Grid refresh after reset** (`dashboard.js`): `refreshGrid()` must be called after every `/simulation/reset`. The warehouse is procedurally regenerated with new random shelves/pillars on each reset. If the frontend uses stale `gridData`, robots will APPEAR to bypass obstacles.
+
+6. **Coordinate convention**: The entire codebase uses `(x, y)` tuples for positions and paths, with `grid[y][x]` for array access. **Never swap x and y.** The full pipeline is:
+   - Backend grid: `grid[y][x]`
+   - `is_walkable(x, y)` checks `grid[y][x] != "S"`
+   - `get_neighbors(x, y)` returns `(nx, ny)` tuples
+   - A\* paths: list of `(x, y)` tuples
+   - Robot position: `Position(x=x, y=y)`
+   - API response: `[[x, y], ...]` for paths, `{"x": x, "y": y}` for position
+   - Frontend grid: `cells[y][x]`, robot drawn at `cells[ry][rx]`
+   - SVG path overlay: `p[0]` = x, `p[1]` = y
+
+7. **`warehouse` must be in agent context** (`engine.py`): The simulation engine must inject the `warehouse` object into the agent tick context so that `_handle_move` can perform walkability checks. If `warehouse` is missing from the context dict, the full-path validation silently skips.
+
+### Error Handling Tags
+
+All pathfinding errors use searchable log tags:
+
+| Tag | File | Meaning |
+|-----|------|---------|
+| `[PATHFINDER ERROR]` | `pathfinder.py` | A\* produced or was asked for a path through unwalkable cells |
+| `[PATHFINDER WARNING]` | `pathfinder.py` | A\* found no valid path between two points |
+| `[OBSTACLE BYPASS DETECTED]` | `robot.py` | A robot's stored path contained an unwalkable cell at runtime |
+| `[OBSTACLE BYPASS RECOVERY]` | `robot.py` | Path was successfully recomputed around the obstacle |
+| `[OBSTACLE BYPASS RECOVERY FAILED]` | `robot.py` | No alternative path exists — robot stops |
+| `[CHARGE ERROR]` | `robot.py` | No valid path to any charging station |
+| `[DELIVERY PATH ERROR]` | `robot.py` | Delivery path was empty when robot tried to switch to it |
+| `[TASK AGENT WARNING]` | `task.py` | Path computation failed during task contract award |
+| `[GRID REFRESH]` | `dashboard.js` | Frontend re-fetched warehouse grid after reset |
+| `[RESET DETECTED]` | `dashboard.js` | Frontend detected simulation step counter dropped (auto-refresh) |

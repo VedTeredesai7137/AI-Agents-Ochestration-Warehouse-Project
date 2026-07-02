@@ -391,10 +391,24 @@ class RobotAgent:
 
         station = charging_manager.get_nearest_station(robot)
 
-        robot.path = pathfinder.find_path(
+        charge_path = pathfinder.find_path(
             (robot.position.x, robot.position.y),
             station
         )
+
+        if not charge_path:
+            # No valid path to charger — stay IDLE and retry next tick
+            print(
+                f"[CHARGE ERROR] Robot {robot.id}: no valid path to "
+                f"charger at {station}. Staying IDLE."
+            )
+            robot.current_task = None
+            robot.path = []
+            robot.status = RobotStatus.IDLE
+            self._remember("charge_path_failed", {"station": station})
+            return
+
+        robot.path = charge_path
         robot.current_task = None
         robot.status = RobotStatus.CHARGING
 
@@ -443,12 +457,55 @@ class RobotAgent:
             return
 
         next_x, next_y = robot.path[1]
-        
+
+        # --- Full remaining-path integrity check ---
+        # Validate ALL remaining cells in the path, not just the next one.
+        # If any future cell is unwalkable, the entire path is corrupt and
+        # must be recomputed. This catches stale paths from prior grid states.
         warehouse = ctx.get("warehouse")
-        if warehouse and not warehouse.is_walkable(next_x, next_y):
-            robot.path = []  # Clear broken path
-            self._remember("path_invalidated", {"cell": (next_x, next_y)})
-            return
+        if warehouse:
+            for step_idx in range(1, len(robot.path)):
+                check_x, check_y = robot.path[step_idx]
+                if not warehouse.is_walkable(check_x, check_y):
+                    print(
+                        f"[OBSTACLE BYPASS DETECTED] Robot {robot.id}: "
+                        f"path cell ({check_x},{check_y}) at step {step_idx} "
+                        f"is NOT walkable (grid='{warehouse.grid[check_y][check_x]}'). "
+                        f"Robot pos=({robot.position.x},{robot.position.y}), "
+                        f"status={robot.status.value}, task={robot.current_task}. "
+                        f"Full path: {robot.path}. "
+                        f"Path INVALIDATED — attempting recompute."
+                    )
+                    self._remember("path_invalidated", {
+                        "cell": (check_x, check_y),
+                        "step_index": step_idx,
+                        "reason": "obstacle_in_remaining_path",
+                        "grid_value": warehouse.grid[check_y][check_x],
+                    })
+
+                    # Attempt to recompute path to the original destination
+                    if len(robot.path) > 0:
+                        destination = robot.path[-1]
+                        new_path = pathfinder.find_path(
+                            (robot.position.x, robot.position.y),
+                            destination
+                        )
+                        if new_path:
+                            robot.path = new_path
+                            print(
+                                f"[OBSTACLE BYPASS RECOVERY] Robot {robot.id}: "
+                                f"recomputed valid path to {destination}, "
+                                f"length={len(new_path)}"
+                            )
+                        else:
+                            robot.path = []
+                            print(
+                                f"[OBSTACLE BYPASS RECOVERY FAILED] Robot {robot.id}: "
+                                f"no valid path to {destination}. Path cleared."
+                            )
+                    else:
+                        robot.path = []
+                    return
 
         success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
         if not success:
@@ -502,6 +559,26 @@ class RobotAgent:
 
         if robot.current_task is not None:
             if not robot.carrying_item:
+                # Validate delivery_path before switching
+                if not robot.delivery_path:
+                    print(
+                        f"[DELIVERY PATH ERROR] Robot {robot.id}: "
+                        f"delivery_path is empty at pickup arrival. "
+                        f"Releasing task {robot.current_task}."
+                    )
+                    task_manager.unassign_task(robot.current_task)
+                    self.broadcast(
+                        MessageType.TASK_RELEASED,
+                        {"robot_id": robot.id, "task_id": robot.current_task}
+                    )
+                    self._remember("delivery_path_empty", {"task_id": robot.current_task})
+                    robot.current_task = None
+                    robot.carrying_item = False
+                    robot.delivery_path = []
+                    robot.status = RobotStatus.IDLE
+                    self.goal = AgentGoal.IDLE
+                    return
+
                 robot.carrying_item = True
                 robot.path = robot.delivery_path
                 robot.status = RobotStatus.DELIVERING
@@ -534,6 +611,28 @@ class RobotAgent:
     def _handle_pickup(self, ctx):
         """Pick up item at current location."""
         robot = self.robot
+        task_manager = ctx["task_manager"]
+
+        # Validate delivery_path before switching
+        if not robot.delivery_path:
+            print(
+                f"[DELIVERY PATH ERROR] Robot {robot.id}: "
+                f"delivery_path is empty during pickup. "
+                f"Releasing task {robot.current_task}."
+            )
+            task_manager.unassign_task(robot.current_task)
+            self.broadcast(
+                MessageType.TASK_RELEASED,
+                {"robot_id": robot.id, "task_id": robot.current_task}
+            )
+            self._remember("delivery_path_empty", {"task_id": robot.current_task})
+            robot.current_task = None
+            robot.carrying_item = False
+            robot.delivery_path = []
+            robot.status = RobotStatus.IDLE
+            self.goal = AgentGoal.IDLE
+            return
+
         robot.carrying_item = True
         robot.path = robot.delivery_path
         robot.status = RobotStatus.DELIVERING

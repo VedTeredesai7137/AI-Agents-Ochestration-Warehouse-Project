@@ -28,11 +28,63 @@ class AStarPathfinder:
 
         return path
 
+    def _validate_path_integrity(self, path):
+        """
+        Post-search safety check: verify every cell in the path is walkable
+        and each consecutive step is exactly 1 orthogonal move apart.
+        Returns the path if valid, empty list if any cell is invalid.
+        """
+        if not path:
+            return []
+
+        for i, (x, y) in enumerate(path):
+            if not self.warehouse.is_walkable(x, y):
+                print(
+                    f"[PATHFINDER ERROR] Path integrity failed: "
+                    f"cell ({x},{y}) at index {i} is NOT walkable. "
+                    f"Path rejected. Full path: {path}"
+                )
+                return []
+
+        # Verify orthogonal adjacency between consecutive cells
+        for i in range(1, len(path)):
+            px, py = path[i - 1]
+            cx, cy = path[i]
+            dx = abs(cx - px)
+            dy = abs(cy - py)
+            if (dx + dy) != 1:
+                print(
+                    f"[PATHFINDER ERROR] Path integrity failed: "
+                    f"non-adjacent step from ({px},{py}) to ({cx},{cy}) "
+                    f"at index {i}. Distance={dx+dy}. Path rejected."
+                )
+                return []
+
+        return path
+
     def find_path(
         self,
         start,
         goal
     ):
+        # Pre-validate start and goal are walkable
+        if not self.warehouse.is_walkable(start[0], start[1]):
+            print(
+                f"[PATHFINDER ERROR] Start cell ({start[0]},{start[1]}) "
+                f"is NOT walkable. Returning empty path."
+            )
+            return []
+
+        if not self.warehouse.is_walkable(goal[0], goal[1]):
+            print(
+                f"[PATHFINDER ERROR] Goal cell ({goal[0]},{goal[1]}) "
+                f"is NOT walkable. Returning empty path."
+            )
+            return []
+
+        # Trivial case: start == goal
+        if start == goal:
+            return [start]
 
         open_set = []
 
@@ -54,18 +106,27 @@ class AStarPathfinder:
             )
         }
 
+        # Closed set prevents re-expansion of already-processed nodes
+        closed_set = set()
+
         while open_set:
 
             current = heapq.heappop(
                 open_set
             )[1]
 
-            if current == goal:
+            # Skip if already processed (stale heap entry)
+            if current in closed_set:
+                continue
 
-                return self.reconstruct_path(
+            if current == goal:
+                raw_path = self.reconstruct_path(
                     came_from,
                     current
                 )
+                return self._validate_path_integrity(raw_path)
+
+            closed_set.add(current)
 
             neighbors = self.warehouse.get_neighbors(
                 current[0],
@@ -73,6 +134,9 @@ class AStarPathfinder:
             )
 
             for neighbor in neighbors:
+
+                if neighbor in closed_set:
+                    continue
 
                 tentative_g_score = (
                     g_score[current] + 1
@@ -107,4 +171,8 @@ class AStarPathfinder:
                         )
                     )
 
+        print(
+            f"[PATHFINDER WARNING] No path found from "
+            f"{start} to {goal}."
+        )
         return []

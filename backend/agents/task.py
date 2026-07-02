@@ -153,6 +153,22 @@ class TaskAgent:
         )
 
         if not pickup_path or not delivery_path:
+            if not pickup_path:
+                print(
+                    f"[TASK AGENT WARNING] Task {self.task.id}: "
+                    f"no valid pickup path from "
+                    f"({robot.position.x},{robot.position.y}) to "
+                    f"({self.task.pickup_x},{self.task.pickup_y}) "
+                    f"for Robot {winner_id}. Re-issuing CFP."
+                )
+            if not delivery_path:
+                print(
+                    f"[TASK AGENT WARNING] Task {self.task.id}: "
+                    f"no valid delivery path from "
+                    f"({self.task.pickup_x},{self.task.pickup_y}) to "
+                    f"({self.task.delivery_x},{self.task.delivery_y}) "
+                    f"for Robot {winner_id}. Re-issuing CFP."
+                )
             self.received_proposals = []
             self.status = TaskAgentStatus.WAITING
             return None

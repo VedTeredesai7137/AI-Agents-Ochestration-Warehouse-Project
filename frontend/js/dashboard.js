@@ -8,6 +8,7 @@ let selectedRobotId = null;
 let previousPaths = {};
 let displayedAuctionLogs = 0;
 let displayedNegotiationLogs = 0;
+let lastKnownStep = -1;
 
 // ---- Init ----
 
@@ -29,7 +30,7 @@ async function init() {
     setInterval(poll, 200);
 }
 
-// ---- Fetch warehouse grid (once) ----
+// ---- Fetch warehouse grid ----
 
 async function fetchGrid() {
     try {
@@ -41,6 +42,18 @@ async function fetchGrid() {
     } catch (e) {
         console.error('Failed to fetch grid:', e);
     }
+}
+
+// ---- Refresh grid after reset ----
+
+async function refreshGrid() {
+    await fetchGrid();
+    buildGrid();
+    previousPaths = {};
+    displayedAuctionLogs = 0;
+    displayedNegotiationLogs = 0;
+    lastKnownStep = 0;
+    console.log('[GRID REFRESH] Warehouse grid re-fetched and rebuilt after reset.');
 }
 
 // ---- Build grid DOM ----
@@ -85,6 +98,13 @@ async function poll() {
         const tasks = await tasksRes.json();
         const status = await statusRes.json();
         const agents = await agentsRes.json();
+
+        // Detect simulation reset: step went back to 0 or dropped below last known
+        if (status.current_step < lastKnownStep && status.current_step <= 1) {
+            console.log('[RESET DETECTED] Simulation step dropped — refreshing grid...');
+            await refreshGrid();
+        }
+        lastKnownStep = status.current_step;
 
         updateGrid(robots, tasks);
         drawPaths(robots);
@@ -384,6 +404,10 @@ function updateNegotiationLogs(logs) {
 async function apiPost(url) {
     try {
         await fetch(url, { method: 'POST' });
+        // After reset, immediately refresh the grid so shelves match the new warehouse
+        if (url.includes('/simulation/reset')) {
+            await refreshGrid();
+        }
     } catch (e) {
         console.error('API call failed:', e);
     }
