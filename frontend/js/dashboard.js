@@ -9,6 +9,24 @@ let previousPaths = {};
 let displayedAuctionLogs = 0;
 let displayedNegotiationLogs = 0;
 let lastKnownStep = -1;
+let recentObstacles = [];
+let alertTimeout = null;
+
+function showSystemAlert(text, className, duration = 3000) {
+    const banner = document.getElementById('system-alert-banner');
+    if (!banner) return;
+    banner.textContent = text;
+    banner.className = className;
+    banner.style.display = 'block';
+    
+    if (alertTimeout) clearTimeout(alertTimeout);
+    
+    if (duration) {
+        alertTimeout = setTimeout(() => {
+            banner.style.display = 'none';
+        }, duration);
+    }
+}
 
 // ---- Init ----
 
@@ -87,17 +105,19 @@ function buildGrid() {
 
 async function poll() {
     try {
-        const [robotsRes, tasksRes, statusRes, agentsRes] = await Promise.all([
+        const [robotsRes, tasksRes, statusRes, agentsRes, gridRes] = await Promise.all([
             fetch('/robots'),
             fetch('/tasks'),
             fetch('/simulation/status'),
-            fetch('/agents/status')
+            fetch('/agents/status'),
+            fetch('/warehouse/grid')
         ]);
 
         const robots = await robotsRes.json();
         const tasks = await tasksRes.json();
         const status = await statusRes.json();
         const agents = await agentsRes.json();
+        const newGridData = await gridRes.json();
 
         // Detect simulation reset: step went back to 0 or dropped below last known
         if (status.current_step < lastKnownStep && status.current_step <= 1) {
@@ -105,6 +125,34 @@ async function poll() {
             await refreshGrid();
         }
         lastKnownStep = status.current_step;
+        
+        if (status.total_strikes !== undefined && status.total_strikes > 0) {
+            console.log(`[CHAOS METRIC] Total Active Strikes: ${status.total_strikes}`);
+        }
+        
+        // Detect mid-simulation changes (calamity)
+        if (gridData && gridData.length > 0) {
+            for (let y = 0; y < gridHeight; y++) {
+                for (let x = 0; x < gridWidth; x++) {
+                    if (gridData[y][x] === '.' && newGridData.grid[y][x] === 'S') {
+                        recentObstacles.push({x, y, time: Date.now()});
+                    }
+                }
+            }
+        }
+        gridData = newGridData.grid;
+        
+        let hasCriticalTask = false;
+        for (const task of tasks) {
+            if (task.priority === "CRITICAL" && !task.completed) {
+                hasCriticalTask = true;
+                break;
+            }
+        }
+        
+        if (hasCriticalTask) {
+            showSystemAlert("EMERGENCY: CRITICAL TASK ACTIVE", "alert-emergency", 3000);
+        }
 
         updateGrid(robots, tasks);
         drawPaths(robots);
@@ -145,8 +193,13 @@ async function poll() {
         }
         const negotiationLogs = await negotiationRes.json();
         
-        if (negotiationLogs && negotiationLogs.length > 0) {
-            // Log fetched successfully
+        if (negotiationLogs && negotiationLogs.length > displayedNegotiationLogs) {
+            for (let i = displayedNegotiationLogs; i < negotiationLogs.length; i++) {
+                if (negotiationLogs[i].event === 'Crisis: Aisle Collapse') {
+                    showSystemAlert("CRITICAL ALERT: WAREHOUSE AISLE COLLAPSED", "alert-crisis", 5000);
+                }
+            }
+            displayedNegotiationLogs = negotiationLogs.length;
         }
         
         updateNegotiationLogs(negotiationLogs);
@@ -159,6 +212,9 @@ async function poll() {
 
 function updateGrid(robots, tasks) {
     if (!gridData) return;
+    
+    const now = Date.now();
+    recentObstacles = recentObstacles.filter(o => now - o.time < 5000);
 
     // Reset all cells to base
     for (let y = 0; y < gridHeight; y++) {
@@ -168,9 +224,13 @@ function updateGrid(robots, tasks) {
 
             cell.className = 'cell';
             cell.innerHTML = '';
+            cell.style.animation = "";
 
             if (tile === 'S') {
                 cell.classList.add('cell-shelf');
+                if (recentObstacles.some(o => o.x === x && o.y === y)) {
+                    cell.style.animation = "pulse-red-cell 1s infinite alternate";
+                }
             } else if (tile === 'C') {
                 cell.classList.add('cell-charger');
                 cell.innerHTML = '<span class="cell-charger-icon">⚡</span>';
@@ -201,6 +261,13 @@ function updateGrid(robots, tasks) {
         if (py >= 0 && py < gridHeight && px >= 0 && px < gridWidth) {
             const pc = cells[py][px];
             pc.className = 'cell cell-pickup';
+            if (task.priority === "CRITICAL") {
+                pc.style.backgroundColor = "var(--accent-red, red)";
+                pc.style.boxShadow = "0 0 10px red";
+            } else {
+                pc.style.backgroundColor = "";
+                pc.style.boxShadow = "";
+            }
             pc.innerHTML = `T${task.id}`;
         }
     }

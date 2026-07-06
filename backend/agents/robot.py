@@ -80,6 +80,7 @@ class RobotAgent:
         }
         self.goal = AgentGoal.IDLE
         self.has_greeted = False
+        self.blocked_counter = 0
         self.memory = []
         self.current_plan = []
 
@@ -126,7 +127,7 @@ class RobotAgent:
         messages = self.message_bus.get_messages(self.agent_id)
 
         for msg in messages:
-            if msg.message_type == MessageType.CFP:
+            if msg.message_type in (MessageType.CFP, MessageType.EMERGENCY_CFP):
                 self._handle_cfp(msg)
             elif msg.message_type == MessageType.TASK_AWARDED:
                 self._handle_task_awarded(msg)
@@ -143,9 +144,10 @@ class RobotAgent:
         Eligibility: no current task, battery >= 30, status is IDLE.
         """
         robot = self.robot
+        is_emergency = msg.message_type == MessageType.EMERGENCY_CFP
 
         # Eligibility check
-        if robot.current_task is not None:
+        if not is_emergency and robot.current_task is not None:
             return
         if robot.battery < 30:
             return
@@ -184,6 +186,9 @@ class RobotAgent:
 
     def _handle_task_awarded(self, msg):
         """Process a TASK_AWARDED message — update memory."""
+        dropped = msg.payload.get("dropped_task_id")
+        if dropped is not None:
+            self.broadcast(MessageType.TASK_RELEASED, {"robot_id": self.robot.id, "task_id": dropped})
         self._remember("task_awarded", {
             "task_id": msg.payload.get("task_id"),
         })
@@ -509,6 +514,9 @@ class RobotAgent:
 
         success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
         if not success:
+            self.blocked_counter += 1
+            print(f"\n[⚠️ DEADLOCK] Robot {robot.id} blocked at ({next_x}, {next_y}). Strike {self.blocked_counter}/3.")
+            
             self._remember(
                 "blocked",
                 {"cell": (next_x, next_y)}
@@ -519,22 +527,24 @@ class RobotAgent:
                 {"robot_id": robot.id, "cell": (next_x, next_y)}
             )
             
-            negotiation_service = ctx.get("negotiation_service")
-            if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING and negotiation_service:
-                robot.status = RobotStatus.NEGOTIATING
-                
-                def on_negotiation_complete(winner_id, reason):
-                    # Default back to IDLE so it re-decides next tick
-                    robot.status = RobotStatus.IDLE
+            if self.blocked_counter >= 3:
+                negotiation_service = ctx.get("negotiation_service")
+                if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING and negotiation_service:
+                    robot.status = RobotStatus.NEGOTIATING
                     
-                negotiation_service.resolve_deadlock(robot.id, conflicting_robot_id, next_x, next_y, on_negotiation_complete)
+                    def on_negotiation_complete(winner_id, reason):
+                        # Default back to IDLE so it re-decides next tick
+                        robot.status = RobotStatus.IDLE
+                        
+                    negotiation_service.resolve_deadlock(robot.id, conflicting_robot_id, next_x, next_y, on_negotiation_complete)
                 
             return
 
+        self.blocked_counter = 0
         robot.position.x = next_x
         robot.position.y = next_y
         robot.path.pop(0)
-        robot.battery -= 1
+        robot.battery -= 2 if robot.carrying_item else 1
 
         print(
             f"Robot {robot.id} -> ({next_x},{next_y}) "

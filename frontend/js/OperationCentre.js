@@ -15,7 +15,8 @@ const state = {
         totalMessages: 0,
         completedTasks: 0
     },
-    renderedMessageIds: new Set()
+    renderedMessageIds: new Set(),
+    orchestrator: null
 };
 
 const UI = {
@@ -28,7 +29,12 @@ const UI = {
     messageBusContent: document.getElementById('message-bus-content'),
     auctionContent: document.getElementById('auction-content'),
     metricsContent: document.getElementById('metrics-content'),
-    negotiationContent: document.getElementById('negotiation-content')
+    negotiationContent: document.getElementById('negotiation-content'),
+    orchestratorPanel: document.getElementById('orchestrator-panel'),
+    orchestratorContent: document.getElementById('orchestrator-content'),
+    orchestratorStatusBadge: document.getElementById('orchestrator-status-badge'),
+    hitlOverlay: document.getElementById('hitl-overlay'),
+    hitlDetails: document.getElementById('hitl-details')
 };
 
 // ==========================================
@@ -53,15 +59,17 @@ async function pollData() {
             agentsRes, 
             messagesRes, 
             auctionsRes, 
-            negotiationsRes
+            negotiationsRes,
+            orchestratorRes
         ] = await Promise.all([
-            fetch('/simulation/status'),
-            fetch('/robots'),
-            fetch('/tasks'),
-            fetch('/agents/status'),
-            fetch('/agents/messages'),
-            fetch('/auction/logs'),
-            fetch('/negotiation/logs')
+            fetch('/simulation/status').catch(e => { console.error("Error fetching status:", e); throw e; }),
+            fetch('/robots').catch(e => { console.error("Error fetching robots:", e); throw e; }),
+            fetch('/tasks').catch(e => { console.error("Error fetching tasks:", e); throw e; }),
+            fetch('/agents/status').catch(e => { console.error("Error fetching agent status:", e); throw e; }),
+            fetch('/agents/messages').catch(e => { console.error("Error fetching agent messages:", e); throw e; }),
+            fetch('/auction/logs').catch(e => { console.error("Error fetching auction logs:", e); throw e; }),
+            fetch('/negotiation/logs').catch(e => { console.error("Error fetching negotiation logs:", e); throw e; }),
+            fetch('/orchestrator/state').catch(e => { console.error("Error fetching orchestrator state:", e); throw e; })
         ]);
 
         state.simStatus = await statusRes.json();
@@ -71,20 +79,45 @@ async function pollData() {
         state.agentStatus = agentData.agents;
         
         const msgData = await messagesRes.json();
-        // Flatten messages and sort by ID (assuming ID is sequential)
-        let allMessages = [];
-        msgData.agents.forEach(a => {
-            allMessages = allMessages.concat(a.pending_messages.map(m => ({...m, recipient: a.robot_id})));
+        // Flatten messages and accumulate them instead of overwriting to prevent flickering
+        let incomingMessages = [];
+        if (msgData && msgData.agents) {
+            msgData.agents.forEach(a => {
+                if (a.pending_messages) {
+                    incomingMessages = incomingMessages.concat(a.pending_messages.map(m => ({...m, recipient: a.robot_id})));
+                }
+            });
+        }
+        
+        incomingMessages.forEach(msg => {
+            if (!state.renderedMessageIds.has(msg.id)) {
+                state.messages.push(msg);
+                state.renderedMessageIds.add(msg.id);
+                try {
+                    // Log displayed message to console as requested
+                    console.log(`[Message Bus] ID: ${msg.id} | Type: ${msg.type} | From: ${msg.sender} | To: ${msg.recipient} | Payload:`, msg.payload);
+                } catch (err) {
+                    console.error("Error logging message bus content:", err);
+                }
+            }
         });
-        state.messages = allMessages.sort((a,b) => a.id - b.id);
+        
+        // Sort messages by ID to maintain order
+        state.messages.sort((a,b) => a.id - b.id);
+        
+        // Keep the history bounded to prevent memory leaks
+        if (state.messages.length > 200) {
+            state.messages = state.messages.slice(-200);
+        }
         
         state.auctions = await auctionsRes.json();
         state.negotiations = await negotiationsRes.json();
+        state.orchestrator = await orchestratorRes.json();
 
         updateUI();
 
     } catch (e) {
-        console.error("Polling error", e);
+        console.error("Polling error: Unable to fetch data from backend. Ensure the server is running.", e);
     }
 }
 
@@ -354,6 +387,197 @@ function updateUI() {
     updateAuctions();
     updateNegotiations();
     updateMetrics();
+    updateOrchestrator();
+}
+
+// ==========================================
+// ORCHESTRATOR HUD
+// ==========================================
+function updateOrchestrator() {
+    const orch = state.orchestrator;
+    if (!orch || !UI.orchestratorPanel) return;
+
+    const panel = UI.orchestratorPanel;
+    const content = UI.orchestratorContent;
+    const badge = UI.orchestratorStatusBadge;
+
+    // Panel state classes
+    panel.classList.remove('orch-active', 'orch-waiting');
+
+    if (!orch.active && !orch.waiting_for_human) {
+        badge.textContent = 'INACTIVE';
+        badge.style.color = 'var(--text-secondary)';
+        content.innerHTML = '<div class="empty-state">No active crisis orchestration</div>';
+        // Hide HITL overlay
+        if (UI.hitlOverlay) UI.hitlOverlay.style.display = 'none';
+        return;
+    }
+
+    if (orch.waiting_for_human) {
+        panel.classList.add('orch-waiting');
+        badge.textContent = '⚠ AWAITING HUMAN';
+        badge.style.color = 'var(--status-error)';
+    } else {
+        panel.classList.add('orch-active');
+        badge.textContent = 'ACTIVE';
+        badge.style.color = 'var(--status-negotiating)';
+    }
+
+    // Determine node progress states
+    const nodeOrder = ['diagnose', 'generate_plan', 'validate', 'execute'];
+    const activeNode = orch.active_node || '';
+    
+    function getNodeClass(nodeName) {
+        const activeIdx = nodeOrder.indexOf(activeNode);
+        const nodeIdx = nodeOrder.indexOf(nodeName);
+        
+        // Regenerating state: graph looped back to generate_plan after rejection
+        if ((activeNode === 'regenerating' || activeNode === 'rejected') && nodeName === 'generate_plan') return 'active';
+        if ((activeNode === 'regenerating' || activeNode === 'rejected') && nodeName === 'diagnose') return 'completed';
+        if ((activeNode === 'regenerating' || activeNode === 'rejected') && (nodeName === 'validate' || nodeName === 'execute')) return '';
+        
+        if (activeNode === 'waiting_for_human' && nodeName === 'validate') return 'waiting';
+        if (activeNode === 'waiting_for_human' && nodeIdx < nodeOrder.indexOf('validate')) return 'completed';
+        if (activeNode === 'execute' || activeNode === 'executing' || activeNode === 'human_approved') {
+            if (nodeIdx < nodeOrder.indexOf('execute')) return 'completed';
+            if (nodeName === 'execute') return 'active';
+        }
+        if (nodeName === activeNode) return 'active';
+        if (activeIdx >= 0 && nodeIdx < activeIdx) return 'completed';
+        return '';
+    }
+
+    // Confidence color
+    const conf = orch.confidence_score;
+    let confColor = 'var(--status-delivering)';
+    if (conf !== null && conf < 0.85) confColor = 'var(--status-error)';
+    else if (conf !== null && conf < 0.90) confColor = 'var(--status-charging)';
+
+    const confPct = conf !== null ? Math.round(conf * 100) : 0;
+
+    // Build affected robots display
+    const affectedStr = (orch.affected_robots || []).map(id => `R${id}`).join(', ') || 'None';
+
+    // Plan summary
+    let planSummary = 'N/A';
+    if (orch.proposed_plan && orch.proposed_plan.routes) {
+        planSummary = orch.proposed_plan.routes.map(r => `R${r.robot_id}: ${r.action}`).join('<br>');
+    } else if (orch.proposed_plan && orch.proposed_plan.fallback) {
+        planSummary = 'Fallback plan (LLM unavailable)';
+    }
+
+    content.innerHTML = `
+        <div class="orch-node-progress">
+            <div class="orch-node ${getNodeClass('diagnose')}">Diagnose</div>
+            <div class="orch-node ${getNodeClass('generate_plan')}">Plan</div>
+            <div class="orch-node ${getNodeClass('validate')}">Validate</div>
+            <div class="orch-node ${getNodeClass('execute')}">Execute</div>
+        </div>
+        <div class="orch-detail-grid">
+            <div class="orch-detail-row">
+                <span class="label">Crisis Location</span>
+                <span class="val">${orch.crisis_location ? JSON.stringify(orch.crisis_location) : 'N/A'}</span>
+            </div>
+            <div class="orch-detail-row">
+                <span class="label">Affected Robots</span>
+                <span class="val">${affectedStr}</span>
+            </div>
+            <div class="orch-detail-row">
+                <span class="label">Confidence</span>
+                <span class="val" style="color: ${confColor}">${conf !== null ? (confPct + '%') : 'Pending'}</span>
+            </div>
+            <div class="orch-detail-row">
+                <span class="label">Human Approved</span>
+                <span class="val">${orch.human_approved === null ? 'Pending' : (orch.human_approved ? '✅ Yes' : '❌ No')}</span>
+            </div>
+        </div>
+        ${conf !== null ? `
+        <div class="confidence-bar">
+            <div class="confidence-fill" style="width: ${confPct}%; background: ${confColor};"></div>
+        </div>` : ''}
+        ${orch.error ? `<div style="margin-top: 8px; color: var(--status-error); font-size: 0.75rem;">Error: ${orch.error}</div>` : ''}
+    `;
+
+    // Console log orchestrator state changes
+    console.log(`[Orchestrator HUD] Node: ${activeNode} | Confidence: ${conf} | Waiting: ${orch.waiting_for_human} | Affected: ${affectedStr}`);
+
+    // HITL Overlay
+    if (orch.waiting_for_human && UI.hitlOverlay) {
+        UI.hitlOverlay.style.display = 'flex';
+        if (UI.hitlDetails) {
+            UI.hitlDetails.innerHTML = `
+                <div class="orch-detail-row"><span class="label">Crisis Location</span><span class="val">${JSON.stringify(orch.crisis_location)}</span></div>
+                <div class="orch-detail-row"><span class="label">Affected Robots</span><span class="val">${affectedStr}</span></div>
+                <div class="orch-detail-row"><span class="label">Confidence Score</span><span class="val" style="color: var(--status-error)">${confPct}%</span></div>
+                <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary);">Proposed Plan:</div>
+                <div style="margin-top: 4px; font-size: 0.8rem; color: var(--text-primary);">${planSummary}</div>
+            `;
+        }
+    } else if (UI.hitlOverlay) {
+        UI.hitlOverlay.style.display = 'none';
+    }
+}
+
+// ==========================================
+// ORCHESTRATOR OVERRIDE (HITL)
+// ==========================================
+async function orchestratorOverride(approved) {
+    const action = approved ? 'APPROVE' : 'REJECT';
+    console.log(`[Orchestrator HITL] Operator decision: ${action}`);
+    
+    const approveBtn = document.getElementById('hitl-approve');
+    const rejectBtn = document.getElementById('hitl-reject');
+    
+    // Disable both buttons immediately to prevent double-clicks
+    if (approveBtn) approveBtn.disabled = true;
+    if (rejectBtn) rejectBtn.disabled = true;
+    
+    if (!approved && rejectBtn) {
+        // Show loading state on REJECT — system is looping back to generate_plan
+        rejectBtn.textContent = '🔄 Recalculating...';
+        rejectBtn.style.opacity = '0.7';
+        rejectBtn.style.cursor = 'wait';
+        console.log('[Orchestrator HITL] Reject clicked — sending to backend, graph will loop to GENERATE_PLAN...');
+    }
+    
+    try {
+        const res = await fetch('/orchestrator/override', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approved: approved }),
+        });
+        const data = await res.json();
+        console.log(`[Orchestrator HITL] Server response:`, data);
+        
+        if (approved) {
+            // APPROVE: hide overlay immediately
+            if (UI.hitlOverlay) UI.hitlOverlay.style.display = 'none';
+        } else {
+            // REJECT: hide overlay after a brief delay so user sees the "Recalculating" state
+            // The overlay will reappear when the graph pauses again at the next HITL interrupt
+            setTimeout(() => {
+                if (UI.hitlOverlay) UI.hitlOverlay.style.display = 'none';
+                // Reset button text for next appearance
+                if (rejectBtn) {
+                    rejectBtn.textContent = '❌ REJECT';
+                    rejectBtn.style.opacity = '1';
+                    rejectBtn.style.cursor = 'pointer';
+                    rejectBtn.disabled = false;
+                }
+                if (approveBtn) approveBtn.disabled = false;
+            }, 1500);
+        }
+    } catch (e) {
+        console.error('[Orchestrator HITL] Override request failed:', e);
+        // Re-enable buttons on error
+        if (approveBtn) approveBtn.disabled = false;
+        if (rejectBtn) {
+            rejectBtn.textContent = '❌ REJECT';
+            rejectBtn.style.opacity = '1';
+            rejectBtn.style.cursor = 'pointer';
+            rejectBtn.disabled = false;
+        }
+    }
 }
 
 async function run() {

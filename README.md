@@ -272,13 +272,17 @@ Warehouse Swarm Porject/
 │       ├── robot_orchestrator.py
 │       ├── task_orchestrator.py
 │       ├── message_bus.py
-│       └── negotiation.py
+│       ├── negotiation.py
+│       └── orchestrator_graph.py     # LangGraph crisis orchestrator
 └── frontend/
     ├── css/
-    │   └── dashboard.css             # Stylesheet for live dashboard
+    │   ├── dashboard.css             # Stylesheet for live dashboard
+    │   └── OperationCentre.css       # Stylesheet for AI Operations Centre
     ├── dashboard.html                # Browser visualization template
+    ├── OperationCentre.html          # AI Operations Centre template
     └── js/
-        └── dashboard.js              # Live dashboard interaction scripts
+        ├── dashboard.js              # Live dashboard interaction scripts
+        └── OperationCentre.js        # Operations Centre interaction scripts
 ```
 
 ### Component Responsibilities
@@ -298,6 +302,7 @@ Warehouse Swarm Porject/
 | **CollisionManager** | `simulation/collision.py` | Per-step cell reservation. Resolves deadlocks via LLM. |
 | **ChargingManager** | `simulation/charging.py` | Nearest charging station selection. |
 | **NegotiationService** | `agents/negotiation.py` | Resolves pathing deadlocks using a local LLM (Ollama/Mistral) by analyzing the conflict and reasoning about priority. |
+| **OrchestratorGraph** | `agents/orchestrator_graph.py` | LangGraph-based crisis orchestrator. Runs a deliberative state machine (diagnose → plan → validate → execute) with HITL interrupt and rejection feedback loop. |
 
 ---
 
@@ -496,6 +501,8 @@ Each RobotAgent runs this cycle once per simulation step.
 | `GET` | `/tasks/agents` | Task agent CNP status |
 | `GET` | `/auction/logs` | Raw bids from recent task auctions |
 | `GET` | `/negotiation/logs` | Deadlock resolution reasons from the local LLM |
+| `GET` | `/orchestrator/state` | Current LangGraph orchestrator status, plan, and HITL state |
+| `POST` | `/orchestrator/override` | Accept/reject the orchestrator's proposed crisis plan |
 
 ### GET /agents/status
 
@@ -721,3 +728,241 @@ All pathfinding errors use searchable log tags:
 | `[TASK AGENT WARNING]` | `task.py` | Path computation failed during task contract award |
 | `[GRID REFRESH]` | `dashboard.js` | Frontend re-fetched warehouse grid after reset |
 | `[RESET DETECTED]` | `dashboard.js` | Frontend detected simulation step counter dropped (auto-refresh) |
+
+---
+
+## 16. Controlled Chaos & Stress Testing
+
+To rigorously test the multi-agent negotiation layers, deadlock resolution, and emergency handling, the simulation incorporates intentional "controlled chaos" mechanisms. These features dramatically increase swarm density and system stress, forcing agents to constantly adapt.
+
+### Chaos Mechanisms Injected
+
+1. **Massive Workload Overload**
+   - **120 Initial Tasks**: The simulation boots with 120 procedurally generated tasks (up from 50), immediately saturating the swarm and triggering extensive Contract Net Protocol (CNP) bidding wars.
+   - **Aggressive Battery Drain**: Robots carrying items now consume 2 battery units per step (instead of 1). This forces frequent task-drops mid-execution and emergency routes to charging stations.
+
+2. **The "Depot" Spawn Choke Point**
+   - Instead of distributing the 40 robots randomly across the bottom of the warehouse, they are exclusively spawned inside a dense 10x4 contiguous block in the bottom-center (Rows 25-28, Cols 20-30). 
+   - This intentional bottleneck forces immediate, massive traffic jams at Step 1, rigorously stress-testing the step-local collision manager and the LLM 3-strike deadlock resolution protocol.
+
+3. **Aggressive Crisis Generation (Aisle Collapses)**
+   - **Frequency**: An unplanned calamity is triggered every 50 steps.
+   - **Targeting**: The 3x1 contiguous structural collapse is deliberately biased toward the high-traffic center grid (Rows 10-20), purposefully destroying heavily utilized optimal A* paths.
+
+4. **Emergency Critical Orders**
+   - Tasks can be dynamically injected with a `CRITICAL` priority flag.
+   - TaskAgents broadcast `EMERGENCY_CFP`, permitting busy robots to bid, drop their current normal priority tasks, and immediately route to the emergency pickup.
+
+5. **3-Strike Deadlock Protocol & Observability**
+   - Robots track failed cell reservations via `blocked_counter`.
+   - **Strike 3**: Triggers the `NegotiationService` to resolve the deadlock via the local LLM.
+   - **Dashboard Chaos Metric**: The `dashboard.js` polling loop actively parses API statuses for `total_strikes` and outputs a `[CHAOS METRIC]` directly to the frontend console, providing visual proof of system stress. Banners and pulsing grid cells visually highlight these critical disruptions in real-time.
+
+> **Note for Future AI Editors**: Do not dial down the density or frequency of these chaos events unless explicitly requested. They are intentionally designed to push the multi-agent architecture to its limits.
+
+---
+
+## 17. LangGraph Crisis Orchestrator
+
+The simulation's reactive crisis handling (broadcast a `CRISIS_ALERT` message and hope individual robots reroute) has been replaced by a **deliberative LangGraph orchestrator** that takes centralized control of the swarm during aisle collapses. It generates a multi-robot evacuation plan using the local LLM, validates confidence, and includes a **Human-In-The-Loop (HITL)** interrupt for low-confidence plans.
+
+### Architecture Overview
+
+```text
+SimulationEngine.trigger_warehouse_crisis()
+        │
+        │ Grid modified to "S" (aisle collapse)
+        │ Scan all robot paths for affected robots
+        │
+        ▼
+OrchestratorRunner.invoke_async()   ◄── Runs in threading.Thread(daemon=True)
+        │                                Does NOT block simulation.step() or FastAPI
+        ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    LangGraph StateGraph                      │
+│                                                              │
+│   ┌───────────┐    ┌───────────────┐    ┌──────────┐        │
+│   │  DIAGNOSE  │──►│ GENERATE_PLAN │──►│ VALIDATE  │        │
+│   └───────────┘    └───────────────┘    └────┬─────┘        │
+│                           ▲                  │              │
+│                           │           ┌──────┴──────┐       │
+│                           │           │             │       │
+│                    human_approved   confidence    confidence │
+│                    == False         < 0.85        >= 0.85   │
+│                           │           │             │       │
+│                    ┌──────┘    ┌──────▼──────┐      │       │
+│                    │           │ HITL PAUSE  │      │       │
+│                    │           │ (interrupt  │      │       │
+│                    │           │  _before)   │      │       │
+│                    │           └──────┬──────┘      │       │
+│                    │                  │             │       │
+│                    │           Human Approve/Reject  │       │
+│                    │              │        │         │       │
+│                    │         Approve    Reject       │       │
+│                    │              │        │         │       │
+│                    │              ▼        │         │       │
+│                    │         ┌─────────┐   │         │       │
+│                    └─────────│ EXECUTE │◄──┘─────────┘       │
+│                              └────┬────┘                    │
+│                                   │                         │
+│                                   ▼                         │
+│                               __END__                       │
+│                        (recompute A* paths)                 │
+└──────────────────────────────────────────────────────────────┘
+        │
+        ▼
+  Frontend polls GET /orchestrator/state every 200ms
+  Orchestrator HUD panel + HITL approval overlay
+```
+
+### Key Design Decision: Rejection Feedback Loop
+
+When the human operator clicks **REJECT**, the graph does **not** abort. Instead, the conditional edge from `validate` routes execution **back to `generate_plan`**, asking the LLM for an alternative rerouting strategy. The `rejection_count` state field is incremented, and the LLM prompt is augmented with context about the rejection ("The previous plan was REJECTED... propose a DIFFERENT strategy"). This loop continues until the operator approves.
+
+### State Schema (`OrchestratorState`)
+
+```python
+class OrchestratorState(TypedDict):
+    crisis_location: list            # [(x, y), ...] collapsed cells
+    affected_robots: list            # [robot_id, ...]
+    proposed_plan: dict              # LLM-generated rerouting strategy
+    confidence_score: float          # 0.0–1.0 (random 0.70–0.95)
+    human_approved: Optional[bool]   # None=pending, True=approved, False=rejected
+    active_node: str                 # Current node for frontend observability
+    error: Optional[str]             # Error message if any node fails
+    rejection_count: int             # Times human has rejected plans
+```
+
+### Node Implementations
+
+| Node | Responsibility |
+|---|---|
+| `diagnose` | Reads `crisis_location` and `affected_robots` from state. Logs which robots are trapped. These are pre-populated by the engine's `trigger_warehouse_crisis()` which scans all robot `path` and `delivery_path` lists for cells matching the collapse zone. |
+| `generate_plan` | Sends a structured prompt to the local Ollama/Mistral LLM requesting a JSON rerouting strategy (`routes: [{robot_id, action}]`). If the LLM is offline or times out, falls back to `hold_position_and_recompute_path` for all affected robots. Generates a random `confidence_score` between 0.70 and 0.95. On re-invocation after rejection, the prompt includes rejection context to force alternative strategies. |
+| `validate` | Checks `confidence_score`. If `< 0.85`, sets `human_approved = None` (pending). If `>= 0.85`, sets `human_approved = True` (auto-approved). The graph's `interrupt_before=["execute"]` ensures the graph pauses before execution when approval is pending. |
+| `execute` | Marks the plan as executed. Pushes a log entry to `NegotiationService.negotiation_logs` so it appears in `GET /negotiation/logs` with `Robot1: "Orchestrator"`, `Robot2: "Swarm"`. After the graph completes, `OrchestratorRunner._apply_plan()` recomputes A\* paths for every affected robot. |
+
+### Conditional Edge Routing
+
+```python
+def should_execute_or_regenerate(state) -> str:
+    if state["human_approved"] is False:
+        return "generate_plan"    # REJECTION LOOP
+    return "execute"              # Proceed (interrupt_before handles HITL pause)
+```
+
+### HITL Interrupt Mechanism
+
+The graph uses LangGraph's native checkpointing for Human-In-The-Loop:
+
+1. **Checkpointer**: `MemorySaver()` — in-memory state persistence per invocation.
+2. **Interrupt**: `interrupt_before=["execute"]` — the graph pauses before entering the `execute` node.
+3. **When paused**: `OrchestratorRunner` detects `snapshot.next` is non-empty and checks `human_approved`:
+   - If `None` → sets `_is_waiting_human = True`, frontend shows HITL overlay.
+   - If `True` → auto-approved, resumes immediately.
+4. **Human Override**: `POST /orchestrator/override {approved: bool}`:
+   - `True` → `update_state()` sets `human_approved=True`, graph resumes into `execute`.
+   - `False` → `update_state()` sets `human_approved=False` + increments `rejection_count`, graph resumes. The conditional edge routes to `generate_plan`, creating the feedback loop. The graph pauses again at the next `interrupt_before=["execute"]` with a new plan.
+
+### Triggering (`engine.py`)
+
+`SimulationEngine.trigger_warehouse_crisis()` runs every 50 steps:
+
+1. Selects 3 contiguous walkable cells in the center grid and converts them to `"S"` (shelf/obstacle).
+2. Broadcasts a `CRISIS_ALERT` message via the `MessageBus`.
+3. Calls `NegotiationService.generate_crisis_report()` for an LLM incident report.
+4. **New**: Scans all robot `path` and `delivery_path` lists for any cell matching the collapsed coordinates.
+5. **New**: If affected robots are found, invokes `orchestrator_runner.invoke_async()` with the crisis coordinates, affected robot IDs, and references to `pathfinder` and `robot_manager`.
+
+### API Endpoints
+
+| Method | Path | Request Body | Response |
+|---|---|---|---|
+| `GET` | `/orchestrator/state` | — | `{active, active_node, crisis_location, affected_robots, proposed_plan, confidence_score, human_approved, waiting_for_human, error, rejection_count}` |
+| `POST` | `/orchestrator/override` | `{approved: bool}` | `{success, message}` |
+
+### `GET /orchestrator/state` Response Example
+
+```json
+{
+  "active": true,
+  "active_node": "waiting_for_human",
+  "crisis_location": [[22, 15], [23, 15], [24, 15]],
+  "affected_robots": [3, 7, 12],
+  "proposed_plan": {
+    "routes": [
+      {"robot_id": 3, "action": "reroute_around_north"},
+      {"robot_id": 7, "action": "retreat_to_charger"},
+      {"robot_id": 12, "action": "hold_position"}
+    ]
+  },
+  "confidence_score": 0.78,
+  "human_approved": null,
+  "waiting_for_human": true,
+  "error": null,
+  "rejection_count": 0
+}
+```
+
+### Frontend Integration (AI Operations Centre)
+
+The Orchestrator HUD is the 4th panel in the bottom row of the Operations Centre dashboard.
+
+**Orchestrator HUD Panel**:
+- Node progress bar: 4 visual blocks (`Diagnose → Plan → Validate → Execute`) with color-coded states: `active` (purple glow), `completed` (green), `waiting` (red pulse).
+- Detail grid: crisis location, affected robots, confidence score with color bar, human approval status.
+- Panel border: purple glow when active, red pulsing glow when waiting for human.
+
+**HITL Approval Overlay**:
+- Full-screen dark overlay with glassmorphism backdrop blur.
+- Modal displaying crisis details, confidence score, and the LLM's proposed plan.
+- Two buttons: **✅ APPROVE** (green gradient) and **❌ REJECT** (red gradient).
+- On REJECT: button text changes to `🔄 Recalculating...` with disabled state. Overlay hides after 1.5s. It reappears when the graph loops back and pauses at the next HITL interrupt with a new plan.
+
+### Terminal Logging Tags
+
+All orchestrator activity uses the `[🧠 GRAPH]` tag prefix for searchability:
+
+| Tag | When |
+|-----|------|
+| `[🧠 GRAPH] Executing Node: DIAGNOSE` | Entry of diagnose node |
+| `[🧠 GRAPH] Executing Node: GENERATE_PLAN` | Entry of generate_plan node |
+| `[🧠 GRAPH] Executing Node: VALIDATE` | Entry of validate node |
+| `[🧠 GRAPH] Executing Node: EXECUTE` | Entry of execute node |
+| `[🧠 GRAPH] Transitioning to next node...` | After each node completes |
+| `[🧠 GRAPH] ⏸️ Graph PAUSED at HITL interrupt` | Graph waiting for human |
+| `[🧠 GRAPH] ✅ Human APPROVED the plan` | Operator approved |
+| `[🧠 GRAPH] ❌ Human REJECTED plan` | Operator rejected |
+| `[🧠 GRAPH] Human rejected plan. Looping back to GENERATE_PLAN node.` | Rejection feedback loop triggered |
+| `[🧠 GRAPH] Graph execution FINISHED.` | Execute node completed |
+| `[🧠 GRAPH] ====== CRISIS ORCHESTRATOR INVOKED ======` | Graph invocation started |
+| `[🧠 GRAPH] ====== CRISIS ORCHESTRATOR COMPLETED ======` | Graph fully finished |
+| `[ORCHESTRATOR TRIGGER]` | Engine detected affected robots and invoked graph |
+
+### Dependencies
+
+```text
+langgraph          # StateGraph, END, conditional edges
+langchain-core     # Required by langgraph internals
+langchain-community # Required by langgraph internals
+```
+
+All three must be installed. The orchestrator calls Ollama directly via `requests.post()` (not via LangChain's ChatOllama) to maintain consistency with the existing `NegotiationService` pattern.
+
+### Critical Rules for Future AI Editors
+
+1. **Do NOT remove `interrupt_before=["execute"]`**: This is the mechanism that enables HITL. Without it, low-confidence plans execute without human review.
+
+2. **Do NOT change the conditional edge logic**: The `should_execute_or_regenerate` function must route `human_approved=False` back to `generate_plan`. This is the rejection feedback loop.
+
+3. **Keep the `MemorySaver` checkpointer**: The graph requires a checkpointer for `interrupt_before` to function. `MemorySaver` is in-memory only — there is no persistent storage.
+
+4. **Thread safety**: The `OrchestratorRunner` uses `threading.Lock()` to protect shared state. All reads/writes to `_current_state`, `_is_active`, and `_is_waiting_human` must be inside `with self._lock:`.
+
+5. **Non-blocking**: `invoke_async()` must always run the graph in a `threading.Thread(daemon=True)`. It must NEVER be called synchronously from `simulation.step()` or an API endpoint handler — the LLM call in `generate_plan` can take up to 60 seconds.
+
+6. **Negotiation log schema**: The log entry pushed by `execute` must include `event`, `timestamp`, `reasoning`, and `decision` fields. These are required by the frontend's Negotiation Logs panel. Missing fields will crash the dashboard polling loop.
+
+7. **LLM timeout**: The `requests.post()` call in `generate_plan` must use `timeout=60.0`. See Section 14 for rationale.
+
+8. **Single invocation guard**: `OrchestratorRunner` rejects duplicate invocations while `_is_active=True`. A new crisis during an active orchestration is silently skipped. This prevents state corruption in the checkpointer.

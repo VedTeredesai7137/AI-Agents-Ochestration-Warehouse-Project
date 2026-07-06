@@ -86,7 +86,34 @@
             <div class="panel-content" id="negotiation-content">
             </div>
         </section>
+
+        <!-- Orchestrator HUD -->
+        <section class="panel bottom-panel orchestrator-panel" id="orchestrator-panel">
+            <div class="panel-header">
+                <h2>🧠 Orchestrator HUD</h2>
+                <span class="subtitle" id="orchestrator-status-badge">INACTIVE</span>
+            </div>
+            <div class="panel-content" id="orchestrator-content">
+                <div class="empty-state">No active crisis orchestration</div>
+            </div>
+        </section>
     </footer>
+
+    <!-- HITL Approval Overlay -->
+    <div class="hitl-overlay" id="hitl-overlay" style="display: none;">
+        <div class="hitl-modal">
+            <div class="hitl-icon">⚠️</div>
+            <h2 class="hitl-title">HUMAN APPROVAL REQUIRED</h2>
+            <p class="hitl-subtitle">The LangGraph orchestrator has generated a crisis rerouting plan with <strong>LOW CONFIDENCE</strong>.</p>
+            <div class="hitl-details" id="hitl-details">
+                <!-- Populated by JS -->
+            </div>
+            <div class="hitl-actions">
+                <button class="hitl-btn hitl-approve" id="hitl-approve" onclick="orchestratorOverride(true)">✅ APPROVE</button>
+                <button class="hitl-btn hitl-reject" id="hitl-reject" onclick="orchestratorOverride(false)">❌ REJECT</button>
+            </div>
+        </div>
+    </div>
 
     <script src="{{ url_for('static', path='js/OperationCentre.js') }}"></script>
 </body>

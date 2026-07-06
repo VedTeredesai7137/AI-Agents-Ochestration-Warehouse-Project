@@ -23,6 +23,7 @@ class MessageType(str, Enum):
 
     TASK_AVAILABLE = "TASK_AVAILABLE"
     CFP = "CFP"
+    EMERGENCY_CFP = "EMERGENCY_CFP"
     PROPOSAL = "PROPOSAL"
     TASK_AWARDED = "TASK_AWARDED"
     LOW_BATTERY = "LOW_BATTERY"
@@ -31,6 +32,7 @@ class MessageType(str, Enum):
     ROBOT_STATUS = "ROBOT_STATUS"
     REROUTE = "REROUTE"
     TASK_RELEASED = "TASK_RELEASED"
+    CRISIS_ALERT = "CRISIS_ALERT"
 
 
 # ---------------------------------------------------------------------------

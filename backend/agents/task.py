@@ -95,10 +95,14 @@ class TaskAgent:
 
     def _send_cfp(self):
         """Broadcast a Call For Proposals to all robot agents."""
+        is_emergency = self.task.priority == "CRITICAL"
+        msg_type = MessageType.EMERGENCY_CFP if is_emergency else MessageType.CFP
+        if is_emergency:
+            print(f"\n[🔥 EMERGENCY] CRITICAL TASK {self.task.id} INJECTED! Preempting normal operations.")
         msg = self.message_bus.create_message(
             sender=self.agent_id,
             recipient="ALL",
-            message_type=MessageType.CFP,
+            message_type=msg_type,
             payload={
                 "task_id": self.task.id,
                 "pickup_x": self.task.pickup_x,
@@ -136,7 +140,8 @@ class TaskAgent:
 
         # Verify the robot is still eligible
         robot = robot_manager.get_robot(winner_id)
-        if robot is None or robot.current_task is not None or robot.battery < 30:
+        is_emergency = self.task.priority == "CRITICAL"
+        if robot is None or robot.battery < 30 or (not is_emergency and robot.current_task is not None):
             # Winner no longer eligible — retry next tick
             self.received_proposals = []
             self.status = TaskAgentStatus.WAITING
@@ -174,6 +179,12 @@ class TaskAgent:
             return None
 
         # Award the contract
+        old_task_id = robot.current_task
+        if is_emergency and old_task_id is not None:
+            print(f"\n[🔥 EMERGENCY] Robot {winner_id} dropping Task {old_task_id} to handle Critical Task {self.task.id}.")
+            task_manager.unassign_task(old_task_id)
+            robot.carrying_item = False
+            
         task_manager.assign_task(self.task.id, winner_id)
         robot_manager.assign_task(winner_id, self.task.id, pickup_path)
         robot.delivery_path = delivery_path
@@ -189,6 +200,7 @@ class TaskAgent:
             payload={
                 "task_id": self.task.id,
                 "robot_id": winner_id,
+                "dropped_task_id": old_task_id if is_emergency else None
             }
         )
         self.message_bus.publish(award_msg)

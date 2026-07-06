@@ -11,6 +11,7 @@ class Task:
     delivery_x: int
     delivery_y: int
 
+    priority: str = "NORMAL"
     completed: bool = False
 
     assigned_robot: int | None = None
@@ -27,7 +28,8 @@ class TaskManager:
         pickup_x,
         pickup_y,
         delivery_x,
-        delivery_y
+        delivery_y,
+        priority="NORMAL"
     ):
 
         task = Task(
@@ -35,7 +37,8 @@ class TaskManager:
             pickup_x=pickup_x,
             pickup_y=pickup_y,
             delivery_x=delivery_x,
-            delivery_y=delivery_y
+            delivery_y=delivery_y,
+            priority=priority
         )
 
         self.tasks.append(task)

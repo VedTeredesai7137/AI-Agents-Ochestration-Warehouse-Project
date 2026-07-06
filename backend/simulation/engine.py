@@ -14,6 +14,7 @@ Responsibilities:
 """
 
 from backend.core.models import RobotStatus
+from backend.agents.orchestrator_graph import orchestrator_runner
 
 
 class SimulationEngine:
@@ -38,6 +39,15 @@ class SimulationEngine:
         self.task_agent_manager = task_agent_manager
         self.negotiation_service = negotiation_service
         self.current_step = 0
+
+    # ------------------------------------------------------------------
+    # Orchestrator observability
+    # ------------------------------------------------------------------
+
+    @property
+    def orchestrator_active(self):
+        """True when the LangGraph crisis orchestrator is running."""
+        return orchestrator_runner.is_active
 
     # ------------------------------------------------------------------
     # Legacy assign_new_tasks — kept for backward compatibility when
@@ -162,6 +172,9 @@ class SimulationEngine:
         self.current_step += 1
 
         print(f"\nSTEP {self.current_step}")
+        
+        if self.current_step > 0 and self.current_step % 50 == 0:
+            self.trigger_warehouse_crisis()
 
         self.collision_manager.reset_step()
 
@@ -318,3 +331,70 @@ class SimulationEngine:
             len(unfinished_tasks) == 0
             and len(active_robots) == 0
         )
+
+    def trigger_warehouse_crisis(self):
+        import random
+        warehouse = self.pathfinder.warehouse
+        
+        candidates = []
+        for y in range(10, min(21, warehouse.height - 1)):
+            for x in range(5, warehouse.width - 7):
+                if warehouse.grid[y][x] == "." and warehouse.grid[y][x+1] == "." and warehouse.grid[y][x+2] == ".":
+                    candidates.append((x, y))
+                    
+        if not candidates:
+            # Fallback to whole grid
+            for y in range(1, warehouse.height - 1):
+                for x in range(1, warehouse.width - 3):
+                    if warehouse.grid[y][x] == "." and warehouse.grid[y][x+1] == "." and warehouse.grid[y][x+2] == ".":
+                        candidates.append((x, y))
+        
+        if not candidates:
+            return
+            
+        cx, cy = random.choice(candidates)
+        warehouse.grid[cy][cx] = "S"
+        warehouse.grid[cy][cx+1] = "S"
+        warehouse.grid[cy][cx+2] = "S"
+        
+        print(f"\n[🚨 CRISIS] AISLE COLLAPSE AT ({cx},{cy}) to ({cx+2},{cy})! Rerouting swarm...")
+        
+        if self.agent_manager and self.agent_manager.message_bus:
+            from backend.agents.message_bus import MessageType
+            msg = self.agent_manager.message_bus.create_message(
+                sender="System",
+                recipient="ALL",
+                message_type=MessageType.CRISIS_ALERT,
+                payload={"coords": [(cx, cy), (cx+1, cy), (cx+2, cy)]}
+            )
+            self.agent_manager.message_bus.broadcast(msg)
+            
+        if self.negotiation_service:
+            self.negotiation_service.generate_crisis_report(cx, cy, cx+2, cy)
+
+        # --- LangGraph Orchestrator: Identify affected robots and invoke ---
+        crisis_cells = {(cx, cy), (cx+1, cy), (cx+2, cy)}
+        affected_ids = []
+        for robot in self.robot_manager.robots:
+            # Check if any cell in the robot's current path is now blocked
+            for step in robot.path:
+                if (step[0], step[1]) in crisis_cells:
+                    affected_ids.append(robot.id)
+                    break
+            # Also check delivery_path
+            if robot.id not in affected_ids and hasattr(robot, 'delivery_path'):
+                for step in robot.delivery_path:
+                    if (step[0], step[1]) in crisis_cells:
+                        affected_ids.append(robot.id)
+                        break
+
+        if affected_ids:
+            print(f"[ORCHESTRATOR TRIGGER] {len(affected_ids)} robots affected: {affected_ids}")
+            orchestrator_runner.invoke_async(
+                crisis_coords=list(crisis_cells),
+                affected_robot_ids=affected_ids,
+                pathfinder=self.pathfinder,
+                robot_manager=self.robot_manager,
+            )
+        else:
+            print("[ORCHESTRATOR TRIGGER] No robots directly affected by this collapse.")

@@ -340,6 +340,49 @@ body {
     font-size: 14px;
 }
 
+/* ---- Alerts ---- */
+
+#system-alert-banner {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 14px;
+    color: white;
+    z-index: 1000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.alert-crisis {
+    background-color: var(--accent-red);
+    animation: pulse-red 1s infinite alternate;
+}
+
+.alert-emergency {
+    background-color: var(--accent-orange);
+    animation: pulse-orange 1s infinite alternate;
+}
+
+@keyframes pulse-red {
+    from { box-shadow: 0 0 10px var(--accent-red); }
+    to { box-shadow: 0 0 30px var(--accent-red), 0 0 10px white; }
+}
+
+@keyframes pulse-orange {
+    from { box-shadow: 0 0 10px var(--accent-orange); }
+    to { box-shadow: 0 0 30px var(--accent-orange), 0 0 10px white; }
+}
+
+@keyframes pulse-red-cell {
+    0% { background-color: var(--shelf-color); box-shadow: none; }
+    100% { background-color: var(--accent-red); box-shadow: 0 0 15px var(--accent-red); z-index: 20; position: relative;}
+}
+
 /* ---- Robot List ---- */
 
 .robot-list {

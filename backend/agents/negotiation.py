@@ -266,4 +266,52 @@ class NegotiationService:
                 
         threading.Thread(target=task, daemon=True).start()
 
+    def generate_crisis_report(self, start_x, start_y, end_x, end_y):
+        if not self.lock.acquire(blocking=False):
+            return
+
+        def task():
+            try:
+                prompt = (
+                    f"A warehouse aisle just collapsed from ({start_x}, {start_y}) to ({end_x}, {end_y}). "
+                    "Generate a short, 1-sentence Crisis Incident Report. Output JSON strictly with exactly one field: 'report' (string)."
+                )
+                
+                payload = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "format": "json",
+                    "stream": False
+                }
+                
+                try:
+                    response = requests.post(self.url, json=payload, timeout=60.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    raw_response = data.get("response", "{}")
+                    
+                    result = json.loads(raw_response)
+                    report = result.get("report", "Aisle collapse detected.")
+                except Exception as e:
+                    report = f"Aisle collapse detected. (LLM Offline: {e})"
+                
+                print(f"[CRISIS REPORT] {report}")
+                
+                log_entry = {
+                    "robot1": "System",
+                    "robot2": "Warehouse",
+                    "cell": (start_x, start_y),
+                    "winner": "N/A",
+                    "reason": report,
+                    "event": f"Crisis: Aisle Collapse",
+                    "timestamp": time.time(),
+                    "reasoning": report,
+                    "decision": "Obstacle added"
+                }
+                self.negotiation_logs.append(log_entry)
+            finally:
+                self.lock.release()
+                
+        threading.Thread(target=task, daemon=True).start()
+
 negotiation_service = NegotiationService()

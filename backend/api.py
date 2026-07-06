@@ -22,6 +22,39 @@ from backend.agents.robot_orchestrator import AgentManager
 from backend.agents.message_bus import MessageBus
 from backend.agents.task_orchestrator import TaskAgentManager
 from backend.agents.negotiation import NegotiationService
+from backend.agents.orchestrator_graph import orchestrator_runner
+import logging
+
+class HealthLogFilter(logging.Filter):
+    def __init__(self):
+        super().__init__()
+        self.last_log_time = 0.0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        health_paths = [
+            "/warehouse/grid",
+            "/agents/status",
+            "/simulation/status",
+            "/tasks",
+            "/auction/logs",
+            "/negotiation/logs",
+            "/orchestrator/state",
+            "/robots",
+            "/agents/messages",
+            "/tasks/agents"
+        ]
+        if any(path in msg for path in health_paths):
+            now = time.time()
+            if now - self.last_log_time >= 20.0:
+                self.last_log_time = now
+                return True
+            return False
+        return True
+
+# Apply filter to uvicorn.access logger
+logging.getLogger("uvicorn.access").addFilter(HealthLogFilter())
+
 
 
 # --- Pydantic Request Models ---
@@ -31,6 +64,7 @@ class TaskCreateRequest(BaseModel):
     pickup_y: int
     delivery_x: int
     delivery_y: int
+    priority: str = "NORMAL"
 
 
 # --- Simulation Factory ---
@@ -63,7 +97,7 @@ def initialize_simulation():
             if warehouse.grid[y][x] == ".":
                 return x, y
 
-    for _ in range(35):
+    for _ in range(120):
         px, py = get_random_walkable()
         dx, dy = get_random_walkable()
         task_manager.create_task(px, py, dx, dy)
@@ -239,7 +273,8 @@ def get_tasks():
             "pickup_x": task.pickup_x,
             "pickup_y": task.pickup_y,
             "delivery_x": task.delivery_x,
-            "delivery_y": task.delivery_y
+            "delivery_y": task.delivery_y,
+            "priority": task.priority
         }
         for task in task_manager.tasks
     ]
@@ -282,7 +317,8 @@ def post_create_task(request: TaskCreateRequest):
             request.pickup_x,
             request.pickup_y,
             request.delivery_x,
-            request.delivery_y
+            request.delivery_y,
+            request.priority
         )
 
         new_task_id = task_manager.next_task_id - 1
@@ -415,6 +451,8 @@ def get_simulation_status():
         if not task.completed
     ]
 
+    total_strikes = sum(agent.blocked_counter for agent in agent_manager.agents) if agent_manager else 0
+
     return {
         "current_step": simulation.current_step,
         "active_robots": len(active_robots),
@@ -422,7 +460,9 @@ def get_simulation_status():
         "total_robots": len(robot_manager.robots),
         "total_tasks": len(task_manager.tasks),
         "simulation_complete": simulation.is_complete(),
-        "running": simulation_running
+        "running": simulation_running,
+        "total_strikes": total_strikes,
+        "orchestrator_active": simulation.orchestrator_active
     }
 
 
@@ -475,3 +515,24 @@ def get_task_agents_status():
     return {
         "task_agents": task_agent_manager.get_all_status()
     }
+
+
+# ============================
+# ORCHESTRATOR ENDPOINTS
+# ============================
+
+class OrchestratorOverrideRequest(BaseModel):
+    approved: bool
+
+
+@app.get("/orchestrator/state")
+def get_orchestrator_state():
+    """Return the current LangGraph orchestrator state for frontend HUD."""
+    return orchestrator_runner.get_state()
+
+
+@app.post("/orchestrator/override")
+def post_orchestrator_override(request: OrchestratorOverrideRequest):
+    """Accept human input (Approve/Reject) and resume the paused LangGraph execution."""
+    result = orchestrator_runner.human_override(request.approved)
+    return result
