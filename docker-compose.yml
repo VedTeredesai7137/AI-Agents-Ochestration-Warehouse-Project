@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # Ollama LLM service for negotiation and crisis orchestrator
+  ollama:
+    image: ollama/ollama:latest
+    container_name: warehouse-swarm-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_ORIGINS=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Main warehouse swarm application
+  warehouse-swarm:
+    build: .
+    container_name: warehouse-swarm-app
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - PYTHONPATH=/app
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      # Mount frontend assets for development (optional)
+      - ./frontend:/app/frontend:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - warehouse-network
+
+  # Helper service to pull mistral model (runs once and exits)
+  ollama-setup:
+    image: ollama/ollama:latest
+    container_name: warehouse-swarm-ollama-setup
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: ["ollama", "pull", "mistral"]
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    networks:
+      - warehouse-network
+    restart: "no"
+
+networks:
+  warehouse-network:
+    driver: bridge
+
+volumes:
+  ollama_data:
+    driver: local
