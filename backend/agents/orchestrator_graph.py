@@ -26,6 +26,8 @@ import requests
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
+from backend.core.llm_config import OLLAMA_URL, get_llm_model
+
 
 # ---------------------------------------------------------------------------
 # State Schema
@@ -101,7 +103,7 @@ def generate_plan(state: OrchestratorState) -> dict:
     )
     
     payload = {
-        "model": "mistral",
+        "model": get_llm_model(),
         "prompt": prompt,
         "format": "json",
         "stream": False,
@@ -112,7 +114,7 @@ def generate_plan(state: OrchestratorState) -> dict:
     try:
         print(f"[🧠 GRAPH] generate_plan: Sending prompt to Ollama (attempt #{rejection_count + 1})...")
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            OLLAMA_URL,
             json=payload,
             timeout=60.0,
         )

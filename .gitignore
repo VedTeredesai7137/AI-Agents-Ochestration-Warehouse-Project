@@ -4,3 +4,5 @@ __pycache__/
 .env
 .idea
 .vscode
+.mcp.json
+AGENTS.md

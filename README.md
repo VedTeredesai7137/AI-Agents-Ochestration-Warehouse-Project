@@ -256,7 +256,8 @@ Warehouse Swarm Porject/
 │   ├── main.py                       # Console simulation runner
 │   ├── core/                         # Base schemas and configurations
 │   │   ├── models.py
-│   │   └── constants.py
+│   │   ├── constants.py
+│   │   └── llm_config.py             # Environment-based Ollama model selection
 │   ├── state/                        # In-memory storage managers
 │   │   ├── robot_state.py
 │   │   └── task_state.py
@@ -301,7 +302,7 @@ Warehouse Swarm Porject/
 | **AStarPathfinder** | `simulation/pathfinder.py` | A* pathfinding on the warehouse grid. |
 | **CollisionManager** | `simulation/collision.py` | Per-step cell reservation. Resolves deadlocks via LLM. |
 | **ChargingManager** | `simulation/charging.py` | Nearest charging station selection. |
-| **NegotiationService** | `agents/negotiation.py` | Resolves pathing deadlocks using a local LLM (Ollama/Mistral) by analyzing the conflict and reasoning about priority. |
+| **NegotiationService** | `agents/negotiation.py` | Resolves pathing deadlocks using the configured local Ollama model by analyzing the conflict and reasoning about priority. |
 | **OrchestratorGraph** | `agents/orchestrator_graph.py` | LangGraph-based crisis orchestrator. Runs a deliberative state machine (diagnose → plan → validate → execute) with HITL interrupt and rejection feedback loop. |
 
 ---
@@ -562,13 +563,36 @@ Automatically creates a TaskAgent for the new task. The TaskAgent will issue a C
 
 - Python 3.11 (local at `python311/`)
 - Packages: `fastapi`, `uvicorn`, `pydantic`, `jinja2`, `requests`
-- **Ollama** running locally on port `11434` with the `mistral` model installed (required for the LLM NegotiationService).
+- **Ollama** running locally on port `11434` with either `mistral:latest` or `gemma4:12b` installed.
+
+### Select the Local LLM Provider
+
+Set `LLM_Provider` in the project `.env` file. The setting is read when the backend starts and is used by both `NegotiationService` and the LangGraph crisis orchestrator.
+
+```dotenv
+# Use Mistral
+LLM_Provider=mistral
+
+# Or use Gemma 4 12B
+# LLM_Provider=gemma
+```
+
+Provider mappings:
+
+| `LLM_Provider` value | Ollama model |
+|---|---|
+| `mistral` | `mistral:latest` |
+| `gemma` | `gemma4:12b` |
+
+Use one active `LLM_Provider` line at a time. Restart the API server after changing the value because the selected model is loaded during backend startup.
 
 ### Start the LLM Sidecar
 Ensure Ollama is running before starting the simulation:
 ```bash
-ollama run mistral
+ollama serve
 ```
+
+The configured model must already be available locally. To keep a model loaded, you may also run `ollama run mistral` or `ollama run gemma4:12b` in a separate terminal.
 
 ### Start the API Server
 
@@ -630,8 +654,19 @@ The **AI Operations Centre** perfectly demonstrates an ability to build professi
 
 ## 14. LLM Configuration & Bug Resolution Notes
 
+### Provider Selection
+
+The backend centralizes Ollama configuration in `backend/core/llm_config.py`:
+
+- `LLM_Provider=mistral` selects the installed `mistral:latest` model.
+- `LLM_Provider=gemma` selects the installed `gemma4:12b` model.
+- Provider names are case-insensitive and default to `mistral` when omitted.
+- `OLLAMA_URL` may optionally override the default endpoint `http://localhost:11434/api/generate`.
+
+Changing `.env` does not change an already-running process. Restart Uvicorn after switching providers.
+
 ### Crucial Timeout Configuration
-To ensure robustness during local inference (e.g., running `mistral` via Ollama on consumer hardware), **all LLM request timeouts must be configured to at least 60 seconds**.
+To ensure robustness during local inference (e.g., running `mistral:latest` or `gemma4:12b` via Ollama on consumer hardware), **all LLM request timeouts must be configured to at least 60 seconds**.
 - **Important Note for AI Models**: Any future modification to the negotiation or social greeting LLM calls must preserve the `timeout=60.0` configuration on all HTTP requests (e.g., `requests.post`). Using small/default timeouts (like 5.0 seconds) will cause `ReadTimeout` exceptions when the local model takes time to initialize or generate responses.
 
 ### Pathfinding Enforcement
@@ -838,7 +873,7 @@ class OrchestratorState(TypedDict):
 | Node | Responsibility |
 |---|---|
 | `diagnose` | Reads `crisis_location` and `affected_robots` from state. Logs which robots are trapped. These are pre-populated by the engine's `trigger_warehouse_crisis()` which scans all robot `path` and `delivery_path` lists for cells matching the collapse zone. |
-| `generate_plan` | Sends a structured prompt to the local Ollama/Mistral LLM requesting a JSON rerouting strategy (`routes: [{robot_id, action}]`). If the LLM is offline or times out, falls back to `hold_position_and_recompute_path` for all affected robots. Generates a random `confidence_score` between 0.70 and 0.95. On re-invocation after rejection, the prompt includes rejection context to force alternative strategies. |
+| `generate_plan` | Sends a structured prompt to the configured local Ollama model requesting a JSON rerouting strategy (`routes: [{robot_id, action}]`). If the LLM is offline or times out, falls back to `hold_position_and_recompute_path` for all affected robots. Generates a random `confidence_score` between 0.70 and 0.95. On re-invocation after rejection, the prompt includes rejection context to force alternative strategies. |
 | `validate` | Checks `confidence_score`. If `< 0.85`, sets `human_approved = None` (pending). If `>= 0.85`, sets `human_approved = True` (auto-approved). The graph's `interrupt_before=["execute"]` ensures the graph pauses before execution when approval is pending. |
 | `execute` | Marks the plan as executed. Pushes a log entry to `NegotiationService.negotiation_logs` so it appears in `GET /negotiation/logs` with `Robot1: "Orchestrator"`, `Robot2: "Swarm"`. After the graph completes, `OrchestratorRunner._apply_plan()` recomputes A\* paths for every affected robot. |
 

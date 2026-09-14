@@ -3,10 +3,12 @@ import requests
 import time
 import threading
 
+from backend.core.llm_config import OLLAMA_URL, get_llm_model
+
 class NegotiationService:
     def __init__(self):
-        self.url = "http://localhost:11434/api/generate"
-        self.model = "mistral"
+        self.url = OLLAMA_URL
+        self.model = get_llm_model()
         self.negotiation_logs = []
         self.social_logs = []
         self.lock = threading.Lock()
