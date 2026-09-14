@@ -16,6 +16,8 @@ Architecture:
 """
 
 import asyncio
+import builtins
+import sys
 import json
 import random
 import time
@@ -27,6 +29,15 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from backend.core.llm_config import OLLAMA_URL, get_llm_model
+
+
+def _log(message):
+    """Console encoding must never terminate the orchestration worker."""
+    try:
+        builtins.print(message)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        builtins.print(str(message).encode(encoding, errors="backslashreplace").decode(encoding))
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +71,9 @@ def diagnose(state: OrchestratorState) -> dict:
     affected = state.get("affected_robots", [])
     crisis = state.get("crisis_location", [])
     
-    print(f"\n[🧠 GRAPH] Executing Node: DIAGNOSE | State: crisis={crisis}, affected_count={len(affected)}")
-    print(f"[🧠 GRAPH] diagnose: {len(affected)} robots affected: {affected}")
-    print(f"[🧠 GRAPH] Transitioning to next node...")
+    _log(f"\n[🧠 GRAPH] Executing Node: DIAGNOSE | State: crisis={crisis}, affected_count={len(affected)}")
+    _log(f"[🧠 GRAPH] diagnose: {len(affected)} robots affected: {affected}")
+    _log(f"[🧠 GRAPH] Transitioning to next node...")
     
     return {
         "active_node": "diagnose",
@@ -82,7 +93,7 @@ def generate_plan(state: OrchestratorState) -> dict:
     affected = state["affected_robots"]
     rejection_count = state.get("rejection_count", 0)
     
-    print(f"\n[🧠 GRAPH] Executing Node: GENERATE_PLAN | State: affected={affected}, rejections={rejection_count}")
+    _log(f"\n[🧠 GRAPH] Executing Node: GENERATE_PLAN | State: affected={affected}, rejections={rejection_count}")
     
     # If this is a re-generation after rejection, tell the LLM to try a different approach
     rejection_context = ""
@@ -112,7 +123,7 @@ def generate_plan(state: OrchestratorState) -> dict:
     proposed_plan = {"routes": []}
     
     try:
-        print(f"[🧠 GRAPH] generate_plan: Sending prompt to Ollama (attempt #{rejection_count + 1})...")
+        _log(f"[🧠 GRAPH] generate_plan: Sending prompt to Ollama (attempt #{rejection_count + 1})...")
         response = requests.post(
             OLLAMA_URL,
             json=payload,
@@ -123,9 +134,9 @@ def generate_plan(state: OrchestratorState) -> dict:
         raw = data.get("response", "{}")
         result = json.loads(raw)
         proposed_plan = result
-        print(f"[🧠 GRAPH] generate_plan: LLM plan received: {proposed_plan}")
+        _log(f"[🧠 GRAPH] generate_plan: LLM plan received: {proposed_plan}")
     except requests.exceptions.Timeout:
-        print("[🧠 GRAPH] generate_plan: LLM timeout (60s). Using fallback plan.")
+        _log("[🧠 GRAPH] generate_plan: LLM timeout (60s). Using fallback plan.")
         proposed_plan = {
             "routes": [
                 {"robot_id": rid, "action": "hold_position_and_recompute_path"}
@@ -134,7 +145,7 @@ def generate_plan(state: OrchestratorState) -> dict:
             "fallback": True,
         }
     except Exception as e:
-        print(f"[🧠 GRAPH] generate_plan: LLM error: {e}. Using fallback plan.")
+        _log(f"[🧠 GRAPH] generate_plan: LLM error: {e}. Using fallback plan.")
         proposed_plan = {
             "routes": [
                 {"robot_id": rid, "action": "hold_position_and_recompute_path"}
@@ -146,8 +157,8 @@ def generate_plan(state: OrchestratorState) -> dict:
     
     # Confidence score — random between 0.70 and 0.95 as specified
     confidence = round(random.uniform(0.70, 0.95), 2)
-    print(f"[🧠 GRAPH] generate_plan: Confidence score = {confidence}")
-    print(f"[🧠 GRAPH] Transitioning to next node...")
+    _log(f"[🧠 GRAPH] generate_plan: Confidence score = {confidence}")
+    _log(f"[🧠 GRAPH] Transitioning to next node...")
     
     return {
         "active_node": "generate_plan",
@@ -170,18 +181,18 @@ def validate(state: OrchestratorState) -> dict:
     human_approved = state.get("human_approved")
     rejection_count = state.get("rejection_count", 0)
     
-    print(f"\n[🧠 GRAPH] Executing Node: VALIDATE | State: confidence={confidence}, human_approved={human_approved}, rejections={rejection_count}")
+    _log(f"\n[🧠 GRAPH] Executing Node: VALIDATE | State: confidence={confidence}, human_approved={human_approved}, rejections={rejection_count}")
     
     if confidence < 0.85:
-        print(f"[🧠 GRAPH] validate: LOW CONFIDENCE ({confidence}). Requesting human approval.")
-        print(f"[🧠 GRAPH] Transitioning to next node...")
+        _log(f"[🧠 GRAPH] validate: LOW CONFIDENCE ({confidence}). Requesting human approval.")
+        _log(f"[🧠 GRAPH] Transitioning to next node...")
         return {
             "active_node": "validate",
             "human_approved": None,  # Pending — graph will interrupt before execute
         }
     else:
-        print(f"[🧠 GRAPH] validate: HIGH CONFIDENCE ({confidence}). Auto-approving plan.")
-        print(f"[🧠 GRAPH] Transitioning to next node...")
+        _log(f"[🧠 GRAPH] validate: HIGH CONFIDENCE ({confidence}). Auto-approving plan.")
+        _log(f"[🧠 GRAPH] Transitioning to next node...")
         return {
             "active_node": "validate",
             "human_approved": True,
@@ -206,18 +217,18 @@ def execute(state: OrchestratorState) -> dict:
     confidence = state.get("confidence_score", 0.0)
     rejection_count = state.get("rejection_count", 0)
     
-    print(f"\n[🧠 GRAPH] Executing Node: EXECUTE | State: approved={approved}, affected={len(affected)}, confidence={confidence}, rejections={rejection_count}")
+    _log(f"\n[🧠 GRAPH] Executing Node: EXECUTE | State: approved={approved}, affected={len(affected)}, confidence={confidence}, rejections={rejection_count}")
     
     if approved is False:
         # This path should not normally be reached because the conditional
         # edge routes rejections back to generate_plan. But as a safety net:
-        print("[🧠 GRAPH] execute: Plan REJECTED by operator. This should have looped back.")
+        _log("[🧠 GRAPH] execute: Plan REJECTED by operator. This should have looped back.")
         return {
             "active_node": "execute",
             "proposed_plan": {**plan, "executed": False, "rejected": True},
         }
     
-    print(f"[🧠 GRAPH] execute: Applying rerouting plan to {len(affected)} robots.")
+    _log(f"[🧠 GRAPH] execute: Applying rerouting plan to {len(affected)} robots.")
     
     # Mark plan as executed — the engine will read this and recompute paths
     executed_plan = {
@@ -234,8 +245,8 @@ def execute(state: OrchestratorState) -> dict:
         decision=f"Plan executed for {len(affected)} robots",
     )
     
-    print(f"[🧠 GRAPH] execute: Plan execution complete. Log pushed to negotiation logs.")
-    print(f"[🧠 GRAPH] Graph execution FINISHED.")
+    _log(f"[🧠 GRAPH] execute: Plan execution complete. Log pushed to negotiation logs.")
+    _log(f"[🧠 GRAPH] Graph execution FINISHED.")
     
     return {
         "active_node": "execute",
@@ -268,9 +279,9 @@ def _push_negotiation_log(event: str, reasoning: str, decision: str):
             "decision": decision,
         }
         service.negotiation_logs.append(log_entry)
-        print(f"[🧠 GRAPH] Negotiation log pushed: {event}")
+        _log(f"[🧠 GRAPH] Negotiation log pushed: {event}")
     except Exception as e:
-        print(f"[🧠 GRAPH] WARNING: Failed to push negotiation log: {e}")
+        _log(f"[🧠 GRAPH] WARNING: Failed to push negotiation log: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +300,7 @@ def should_execute_or_regenerate(state: OrchestratorState) -> str:
     human_approved = state.get("human_approved")
     
     if human_approved is False:
-        print(f"\n[🧠 GRAPH] Human rejected plan. Looping back to GENERATE_PLAN node.")
+        _log(f"\n[🧠 GRAPH] Human rejected plan. Looping back to GENERATE_PLAN node.")
         return "generate_plan"
     
     # For True or None, proceed to execute (interrupt_before handles HITL pause)
@@ -365,12 +376,22 @@ class OrchestratorRunner:
     
     @property
     def is_active(self) -> bool:
-        return self._is_active
+        with self._lock:
+            return self._is_active
     
     @property
     def is_waiting_human(self) -> bool:
-        return self._is_waiting_human
+        with self._lock:
+            return self._is_waiting_human
     
+    def reset(self):
+        """Invalidate workers from the previous simulation without blocking on inference."""
+        with self._lock:
+            self._config = None
+            self._current_state = None
+            self._is_active = False
+            self._is_waiting_human = False
+
     def get_state(self) -> dict:
         """Return the current orchestrator state for API consumption."""
         with self._lock:
@@ -391,6 +412,7 @@ class OrchestratorRunner:
             st = self._current_state or {}
             return {
                 "active": self._is_active,
+                "plan_id": f"{self._thread_id}:{st.get('rejection_count', 0)}",
                 "active_node": st.get("active_node"),
                 "crisis_location": st.get("crisis_location"),
                 "affected_robots": st.get("affected_robots", []),
@@ -415,7 +437,7 @@ class OrchestratorRunner:
         """
         with self._lock:
             if self._is_active:
-                print("[🧠 GRAPH] Already active, skipping duplicate invocation.")
+                _log("[🧠 GRAPH] Already active, skipping duplicate invocation.")
                 return
             
             self._invocation_count += 1
@@ -430,9 +452,10 @@ class OrchestratorRunner:
                 "rejection_count": 0,
             }
         
-        # Store references for execute phase
-        self._pathfinder = pathfinder
-        self._robot_manager = robot_manager
+            # Capture invocation identity and dependencies under the same lock.
+            self._pathfinder = pathfinder
+            self._robot_manager = robot_manager
+            config = self._config
         
         initial_state: OrchestratorState = {
             "crisis_location": crisis_coords,
@@ -447,18 +470,20 @@ class OrchestratorRunner:
         
         def run_graph():
             try:
-                print(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR INVOKED (thread_id={self._thread_id}) ======")
-                print(f"[🧠 GRAPH] Crisis coords: {crisis_coords}")
-                print(f"[🧠 GRAPH] Affected robots: {affected_robot_ids}")
+                _log(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR INVOKED (thread_id={self._thread_id}) ======")
+                _log(f"[🧠 GRAPH] Crisis coords: {crisis_coords}")
+                _log(f"[🧠 GRAPH] Affected robots: {affected_robot_ids}")
                 
                 # Invoke graph — will pause at interrupt_before=["execute"]
-                result = orchestrator_graph.invoke(initial_state, self._config)
+                result = orchestrator_graph.invoke(initial_state, config)
                 
-                self._handle_graph_result(result)
+                self._handle_graph_result(result, config)
                 
             except Exception as e:
-                print(f"[🧠 GRAPH] Graph invocation error: {e}")
+                _log(f"[🧠 GRAPH] Graph invocation error: {e}")
                 with self._lock:
+                    if config != self._config:
+                        return
                     self._current_state = self._current_state or {}
                     self._current_state["error"] = str(e)
                     self._current_state["active_node"] = "error"
@@ -468,9 +493,11 @@ class OrchestratorRunner:
         thread = threading.Thread(target=run_graph, daemon=True)
         thread.start()
     
-    def _handle_graph_result(self, result):
+    def _handle_graph_result(self, result, config):
         """Process the result of a graph invocation or resume."""
         with self._lock:
+            if config != self._config:
+                return
             self._current_state = dict(result)
             
             # Check if we're at the interrupt (paused before execute)
@@ -481,30 +508,34 @@ class OrchestratorRunner:
                 if human_approved is None:
                     self._is_waiting_human = True
                     self._current_state["active_node"] = "waiting_for_human"
-                    print(f"\n[🧠 GRAPH] ⏸️  Graph PAUSED at HITL interrupt — waiting for human approval.")
-                    print(f"[🧠 GRAPH] Confidence: {self._current_state.get('confidence_score')} | Rejections: {self._current_state.get('rejection_count', 0)}")
+                    _log(f"\n[🧠 GRAPH] ⏸️  Graph PAUSED at HITL interrupt — waiting for human approval.")
+                    _log(f"[🧠 GRAPH] Confidence: {self._current_state.get('confidence_score')} | Rejections: {self._current_state.get('rejection_count', 0)}")
                 else:
                     # Auto-approved but still at interrupt, resume immediately
                     self._is_waiting_human = False
-                    print(f"[🧠 GRAPH] Auto-approved (confidence >= 0.85). Resuming to execute node...")
+                    _log(f"[🧠 GRAPH] Auto-approved (confidence >= 0.85). Resuming to execute node...")
                     self._resume_graph()
             else:
                 # Graph completed without interrupt
                 self._is_active = False
                 self._apply_plan()
-                print(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR COMPLETED ======")
+                _log(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR COMPLETED ======")
     
     def _resume_graph(self):
         """Resume graph execution after the interrupt (internal, called with lock held)."""
+        config = self._config
+
         def do_resume():
             try:
-                print(f"\n[🧠 GRAPH] Resuming graph execution after interrupt...")
-                result = orchestrator_graph.invoke(None, self._config)
+                _log(f"\n[🧠 GRAPH] Resuming graph execution after interrupt...")
+                result = orchestrator_graph.invoke(None, config)
                 
-                self._handle_graph_result(result)
+                self._handle_graph_result(result, config)
             except Exception as e:
-                print(f"[🧠 GRAPH] Resume error: {e}")
+                _log(f"[🧠 GRAPH] Resume error: {e}")
                 with self._lock:
+                    if config != self._config:
+                        return
                     self._current_state = self._current_state or {}
                     self._current_state["error"] = str(e)
                     self._current_state["active_node"] = "error"
@@ -513,64 +544,29 @@ class OrchestratorRunner:
         
         threading.Thread(target=do_resume, daemon=True).start()
     
-    def human_override(self, approved: bool) -> dict:
-        """
-        Accept human input (Approve/Reject) and resume the paused graph.
-        
-        If approved=True: graph resumes into the execute node.
-        If approved=False: graph loops back to generate_plan for a new strategy.
-        
-        Parameters
-        ----------
-        approved : bool
-            True to approve the plan, False to reject.
-        
-        Returns
-        -------
-        dict with success status and message.
-        """
+    def human_override(self, approved: bool, plan_id=None) -> dict:
+        """Atomically accept one decision for the pending checkpoint."""
         with self._lock:
             if not self._is_waiting_human:
                 return {"success": False, "message": "Orchestrator is not waiting for human input."}
-            
+            expected = f"{self._thread_id}:{self._current_state.get('rejection_count', 0)}"
+            if plan_id is not None and plan_id != expected:
+                return {"success": False, "message": "This plan has changed. Review the current plan."}
+            updates = {"human_approved": approved,
+                       "active_node": "executing" if approved else "regenerating"}
+            if not approved:
+                updates["rejection_count"] = self._current_state.get("rejection_count", 0) + 1
+            try:
+                # Re-evaluate validate's conditional edge, including rejection -> generate_plan.
+                orchestrator_graph.update_state(self._config, updates, as_node="validate")
+            except Exception as error:
+                self._current_state["error"] = str(error)
+                return {"success": False, "message": f"Could not record decision: {error}"}
+            self._current_state.update(updates)
             self._is_waiting_human = False
-            
-            if approved:
-                # Human approved — update state and let the graph proceed to execute
-                orchestrator_graph.update_state(
-                    self._config,
-                    {"human_approved": True, "active_node": "human_approved"},
-                )
-                self._current_state["human_approved"] = True
-                self._current_state["active_node"] = "executing"
-                
-                print(f"\n[🧠 GRAPH] ✅ Human APPROVED the plan. Resuming to EXECUTE node.")
-            else:
-                # Human rejected — increment rejection count and route back to generate_plan
-                current_rejections = self._current_state.get("rejection_count", 0)
-                new_rejection_count = current_rejections + 1
-                
-                orchestrator_graph.update_state(
-                    self._config,
-                    {
-                        "human_approved": False,
-                        "active_node": "rejected",
-                        "rejection_count": new_rejection_count,
-                    },
-                )
-                self._current_state["human_approved"] = False
-                self._current_state["active_node"] = "regenerating"
-                self._current_state["rejection_count"] = new_rejection_count
-                
-                print(f"\n[🧠 GRAPH] ❌ Human REJECTED plan. Rejection count: {new_rejection_count}.")
-                print(f"[🧠 GRAPH] Human rejected plan. Looping back to GENERATE_PLAN node.")
-        
-        # Resume graph execution — the conditional edge will route appropriately
-        self._resume_graph()
-        
-        action = "APPROVED" if approved else "REJECTED — Recalculating"
-        return {"success": True, "message": f"Plan {action}. Graph resuming."}
-    
+            self._resume_graph()
+        return {"success": True, "message": "Decision accepted. Graph resuming."}
+
     def _apply_plan(self):
         """
         After graph completes, apply the rerouting plan to affected robots.
@@ -581,15 +577,15 @@ class OrchestratorRunner:
         
         plan = self._current_state.get("proposed_plan", {})
         if not plan.get("executed"):
-            print("[🧠 GRAPH] Plan was not executed (rejected or error). No paths modified.")
+            _log("[🧠 GRAPH] Plan was not executed (rejected or error). No paths modified.")
             return
         
         affected = self._current_state.get("affected_robots", [])
         if not self._pathfinder or not self._robot_manager:
-            print("[🧠 GRAPH] Missing pathfinder/robot_manager reference. Cannot recompute paths.")
+            _log("[🧠 GRAPH] Missing pathfinder/robot_manager reference. Cannot recompute paths.")
             return
         
-        print(f"[🧠 GRAPH] Applying plan: Recomputing paths for {len(affected)} robots.")
+        _log(f"[🧠 GRAPH] Applying plan: Recomputing paths for {len(affected)} robots.")
         for rid in affected:
             robot = self._robot_manager.get_robot(rid)
             if robot and robot.path and len(robot.path) > 1:
@@ -601,9 +597,9 @@ class OrchestratorRunner:
                 )
                 if new_path:
                     robot.path = new_path
-                    print(f"[🧠 GRAPH] Robot {rid}: Path recomputed ({len(new_path)} steps)")
+                    _log(f"[🧠 GRAPH] Robot {rid}: Path recomputed ({len(new_path)} steps)")
                 else:
-                    print(f"[🧠 GRAPH] Robot {rid}: No valid path found, clearing path.")
+                    _log(f"[🧠 GRAPH] Robot {rid}: No valid path found, clearing path.")
                     robot.path = []
 
 

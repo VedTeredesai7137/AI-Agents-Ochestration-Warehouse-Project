@@ -229,14 +229,19 @@ class RobotAgent:
         robot = self.robot
         if ctx is None: ctx = {}
 
-        self.beliefs["battery_low"] = robot.battery <= 20
+        robot.battery = min(100, max(0, robot.battery))
+        charge_path = []
+        if ctx.get("charging_manager") and ctx.get("pathfinder"):
+            charge_path = ctx["charging_manager"].get_charge_path(robot, ctx["pathfinder"])
+        reserve = max(20, len(charge_path) - 1 + 5) if charge_path else 100
+        self.beliefs["battery_low"] = robot.battery <= reserve
         self.beliefs["battery_full"] = robot.battery >= 100
         self.beliefs["has_task"] = robot.current_task is not None
         self.beliefs["carrying_item"] = robot.carrying_item
         self.beliefs["at_destination"] = len(robot.path) <= 1
         self.beliefs["at_charger"] = (
-            robot.status == RobotStatus.CHARGING
-            and len(robot.path) <= 1
+            bool(ctx.get("warehouse"))
+            and ctx["charging_manager"].at_station(robot, ctx["warehouse"])
         )
 
         if len(robot.path) > 1 and collision_manager is not None:
@@ -303,9 +308,7 @@ class RobotAgent:
                     return "charge_complete"
                 return "charge"
             if b["at_destination"]:
-                if b["battery_full"]:
-                    return "charge_complete"
-                return "charge"
+                return "need_charge"
             return "move"
 
         # Priority 3 — at destination with a task
@@ -394,12 +397,11 @@ class RobotAgent:
                 {"robot_id": robot.id, "task_id": released_task_id}
             )
 
-        station = charging_manager.get_nearest_station(robot)
-
-        charge_path = pathfinder.find_path(
-            (robot.position.x, robot.position.y),
-            station
-        )
+        robot.current_task = None
+        robot.carrying_item = False
+        robot.delivery_path = []
+        charge_path = charging_manager.get_charge_path(robot, pathfinder)
+        station = charge_path[-1] if charge_path else None
 
         if not charge_path:
             # No valid path to charger — stay IDLE and retry next tick
@@ -413,6 +415,11 @@ class RobotAgent:
             self._remember("charge_path_failed", {"station": station})
             return
 
+        if len(charge_path) - 1 > robot.battery:
+            print(f"[CHARGE ERROR] Robot {robot.id}: insufficient energy to reach charger; assistance needed.")
+            robot.path = []
+            robot.status = RobotStatus.NEEDS_CHARGE
+            return
         robot.path = charge_path
         robot.current_task = None
         robot.status = RobotStatus.CHARGING
@@ -434,7 +441,10 @@ class RobotAgent:
     def _handle_charge(self, ctx):
         """Increment battery while sitting at charger."""
         robot = self.robot
-        robot.battery += 10
+        if not ctx["charging_manager"].at_station(robot, ctx["warehouse"]):
+            print(f"[CHARGE ERROR] Robot {robot.id}: cannot charge away from a station.")
+            return
+        robot.battery = min(100, max(0, robot.battery) + 10)
         if robot.battery >= 100:
             robot.battery = 100
 
@@ -461,6 +471,12 @@ class RobotAgent:
         if len(robot.path) <= 1:
             return
 
+        energy = 2 if robot.carrying_item else 1
+        if robot.battery < energy:
+            print(f"[CHARGE ERROR] Robot {robot.id}: insufficient movement energy; assistance needed.")
+            robot.battery = max(0, robot.battery)
+            robot.status = RobotStatus.NEEDS_CHARGE
+            return
         next_x, next_y = robot.path[1]
 
         # --- Full remaining-path integrity check ---
@@ -530,11 +546,12 @@ class RobotAgent:
             if self.blocked_counter >= 3:
                 negotiation_service = ctx.get("negotiation_service")
                 if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING and negotiation_service:
+                    previous_status = robot.status
                     robot.status = RobotStatus.NEGOTIATING
                     
                     def on_negotiation_complete(winner_id, reason):
                         # Default back to IDLE so it re-decides next tick
-                        robot.status = RobotStatus.IDLE
+                        robot.status = previous_status
                         
                     negotiation_service.resolve_deadlock(robot.id, conflicting_robot_id, next_x, next_y, on_negotiation_complete)
                 
@@ -544,7 +561,7 @@ class RobotAgent:
         robot.position.x = next_x
         robot.position.y = next_y
         robot.path.pop(0)
-        robot.battery -= 2 if robot.carrying_item else 1
+        robot.battery = max(0, robot.battery - energy)
 
         print(
             f"Robot {robot.id} -> ({next_x},{next_y}) "

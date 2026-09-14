@@ -1,52 +1,16 @@
 class ChargingManager:
+    """Choose real, reachable chargers using the current warehouse grid."""
 
-    def __init__(self):
+    def get_charge_path(self, robot, pathfinder):
+        warehouse = pathfinder.warehouse
+        start = (robot.position.x, robot.position.y)
+        stations = [(x, y) for y, row in enumerate(warehouse.grid)
+                    for x, cell in enumerate(row) if cell == "C"]
+        paths = [pathfinder.find_path(start, station) for station in stations]
+        return min((path for path in paths if path), key=len, default=[])
 
-        self.charging_stations = [
-            (0, 0),
-            (1, 0),
-            (28, 0),
-            (29, 0)
-        ]
-
-    def get_nearest_station(
-        self,
-        robot
-    ):
-
-        best_station = None
-
-        best_distance = float(
-            "inf"
-        )
-
-        for station in (
-            self.charging_stations
-        ):
-
-            distance = (
-                abs(
-                    robot.position.x
-                    - station[0]
-                )
-                +
-                abs(
-                    robot.position.y
-                    - station[1]
-                )
-            )
-
-            if (
-                distance
-                < best_distance
-            ):
-
-                best_distance = (
-                    distance
-                )
-
-                best_station = (
-                    station
-                )
-
-        return best_station
+    @staticmethod
+    def at_station(robot, warehouse):
+        x, y = robot.position.x, robot.position.y
+        return (0 <= y < len(warehouse.grid) and
+                0 <= x < len(warehouse.grid[y]) and warehouse.grid[y][x] == "C")

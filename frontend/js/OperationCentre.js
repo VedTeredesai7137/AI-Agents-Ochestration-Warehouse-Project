@@ -16,6 +16,11 @@ const state = {
         completedTasks: 0
     },
     renderedMessageIds: new Set(),
+    messageSession: null,
+    displayedMessageId: null,
+    overridePending: false,
+    overrideEpoch: 0,
+    polling: false,
     orchestrator: null
 };
 
@@ -42,7 +47,7 @@ const UI = {
 // ==========================================
 async function fetchInitial() {
     try {
-        const res = await fetch('/warehouse/grid');
+        const res = await apiFetch('/warehouse/grid');
         state.grid = await res.json();
         createGrid();
     } catch (e) {
@@ -51,6 +56,9 @@ async function fetchInitial() {
 }
 
 async function pollData() {
+    if (state.polling) return;
+    state.polling = true;
+    const epoch = state.overrideEpoch;
     try {
         const [
             statusRes, 
@@ -62,62 +70,48 @@ async function pollData() {
             negotiationsRes,
             orchestratorRes
         ] = await Promise.all([
-            fetch('/simulation/status').catch(e => { console.error("Error fetching status:", e); throw e; }),
-            fetch('/robots').catch(e => { console.error("Error fetching robots:", e); throw e; }),
-            fetch('/tasks').catch(e => { console.error("Error fetching tasks:", e); throw e; }),
-            fetch('/agents/status').catch(e => { console.error("Error fetching agent status:", e); throw e; }),
-            fetch('/agents/messages').catch(e => { console.error("Error fetching agent messages:", e); throw e; }),
-            fetch('/auction/logs').catch(e => { console.error("Error fetching auction logs:", e); throw e; }),
-            fetch('/negotiation/logs').catch(e => { console.error("Error fetching negotiation logs:", e); throw e; }),
-            fetch('/orchestrator/state').catch(e => { console.error("Error fetching orchestrator state:", e); throw e; })
+            apiFetch('/simulation/status').catch(e => { console.error("Error fetching status:", e); throw e; }),
+            apiFetch('/robots').catch(e => { console.error("Error fetching robots:", e); throw e; }),
+            apiFetch('/tasks').catch(e => { console.error("Error fetching tasks:", e); throw e; }),
+            apiFetch('/agents/status').catch(e => { console.error("Error fetching agent status:", e); throw e; }),
+            apiFetch('/agents/message-history').catch(e => { console.error("Error fetching agent messages:", e); throw e; }),
+            apiFetch('/auction/logs').catch(e => { console.error("Error fetching auction logs:", e); throw e; }),
+            apiFetch('/negotiation/logs').catch(e => { console.error("Error fetching negotiation logs:", e); throw e; }),
+            apiFetch('/orchestrator/state').catch(e => { console.error("Error fetching orchestrator state:", e); throw e; })
         ]);
 
-        state.simStatus = await statusRes.json();
+        const status = await statusRes.json();
+        if (state.simStatus && status.current_step < state.simStatus.current_step) await fetchInitial();
+        state.simStatus = status;
         state.robots = await robotsRes.json();
         state.tasks = await tasksRes.json();
         const agentData = await agentsRes.json();
         state.agentStatus = agentData.agents;
         
         const msgData = await messagesRes.json();
-        // Flatten messages and accumulate them instead of overwriting to prevent flickering
-        let incomingMessages = [];
-        if (msgData && msgData.agents) {
-            msgData.agents.forEach(a => {
-                if (a.pending_messages) {
-                    incomingMessages = incomingMessages.concat(a.pending_messages.map(m => ({...m, recipient: a.robot_id})));
-                }
-            });
+        if (state.messageSession !== msgData.session_id) {
+            state.messageSession = msgData.session_id;
+            state.messages = [];
+            state.renderedMessageIds.clear();
+            state.displayedMessageId = null;
+            state.metrics.totalMessages = 0;
+            UI.messageBusContent.replaceChildren();
+            await fetchInitial();
         }
-        
-        incomingMessages.forEach(msg => {
-            if (!state.renderedMessageIds.has(msg.id)) {
-                state.messages.push(msg);
-                state.renderedMessageIds.add(msg.id);
-                try {
-                    // Log displayed message to console as requested
-                    console.log(`[Message Bus] ID: ${msg.id} | Type: ${msg.type} | From: ${msg.sender} | To: ${msg.recipient} | Payload:`, msg.payload);
-                } catch (err) {
-                    console.error("Error logging message bus content:", err);
-                }
-            }
-        });
-        
-        // Sort messages by ID to maintain order
-        state.messages.sort((a,b) => a.id - b.id);
-        
-        // Keep the history bounded to prevent memory leaks
-        if (state.messages.length > 200) {
-            state.messages = state.messages.slice(-200);
-        }
-        
+        state.messages = msgData.messages.slice(-200);
+        state.metrics.totalMessages = state.messages.at(-1)?.id || 0;
+
         state.auctions = await auctionsRes.json();
         state.negotiations = await negotiationsRes.json();
-        state.orchestrator = await orchestratorRes.json();
+        const orch = await orchestratorRes.json();
+        if (epoch === state.overrideEpoch && !state.overridePending) state.orchestrator = orch;
 
         updateUI();
 
     } catch (e) {
         console.error("Polling error: Unable to fetch data from backend. Ensure the server is running.", e);
+    } finally {
+        state.polling = false;
     }
 }
 
@@ -235,36 +229,51 @@ function renderInspector() {
 // ==========================================
 // MESSAGE BUS
 // ==========================================
-function updateMessages() {
-    let html = '';
-    // Show last 20 messages for performance
-    const recentMessages = state.messages.slice(-20).reverse();
-    
-    recentMessages.forEach(msg => {
-        state.metrics.totalMessages = Math.max(state.metrics.totalMessages, msg.id);
-        
-        let payloadStr = JSON.stringify(msg.payload);
-        if (payloadStr.length > 50) payloadStr = payloadStr.substring(0, 50) + '...';
+function updateMessages(showLatest = false) {
+    const container = UI.messageBusContent;
+    const latestId = state.messages.at(-1)?.id || 0;
+    const button = document.getElementById('message-feed-latest');
+    const status = document.getElementById('message-feed-status');
 
-        html += `
-            <div class="message-card msg-${msg.type}">
-                <div class="msg-header">
-                    <span class="msg-type">${msg.type}</span>
-                    <span class="msg-time">ID: ${msg.id}</span>
-                </div>
-                <div class="msg-body">
-                    From <strong>${msg.sender}</strong> to <strong>${msg.recipient}</strong><br>
-                    <span style="color: var(--text-secondary); font-size: 0.75rem;">${payloadStr}</span>
-                </div>
-            </div>
-        `;
-    });
-    
-    if (html === '') {
-        html = '<div class="empty-state">No pending messages</div>';
+    // A reading snapshot survives even when the whole server history rolls over.
+    // Only the first nonempty batch and an explicit click may change these cards.
+    if (showLatest || (state.displayedMessageId === null && state.messages.length)) {
+        const recent = state.messages.slice(-100);
+        const keep = new Set(recent.map(msg => String(msg.id)));
+        for (const card of [...container.children]) {
+            if (!keep.has(card.dataset.messageId)) card.remove();
+        }
+        for (const msg of recent) {
+            if (state.renderedMessageIds.has(msg.id)) continue;
+            const card = document.createElement('div');
+            card.className = `message-card msg-${msg.type}`;
+            card.dataset.messageId = String(msg.id);
+            const header = document.createElement('div');
+            header.className = 'msg-header';
+            header.textContent = `${msg.type} | ID: ${msg.id}`;
+            const body = document.createElement('div');
+            body.className = 'msg-body';
+            body.textContent = `From ${msg.sender} to ${msg.recipient}: ${JSON.stringify(msg.payload)}`;
+            card.append(header, body);
+            container.prepend(card);
+        }
+        state.renderedMessageIds = new Set(recent.map(msg => msg.id));
+        state.displayedMessageId = latestId;
+        container.scrollTop = 0;
     }
-    
-    UI.messageBusContent.innerHTML = html;
+
+    const pending = Math.max(0, latestId - (state.displayedMessageId || 0));
+    const label = pending ? `Show latest (${pending} new)` : 'Show latest';
+    if (button.textContent !== label) button.textContent = label;
+    button.disabled = pending === 0;
+    const description = state.displayedMessageId === null
+        ? 'Waiting for messages. New messages are collected live.'
+        : 'View held for reading. Show latest to load the most recent 100 messages.';
+    if (status.textContent !== description) status.textContent = description;
+}
+
+function showLatestMessages() {
+    updateMessages(true);
 }
 
 // ==========================================
@@ -394,6 +403,7 @@ function updateUI() {
 // ORCHESTRATOR HUD
 // ==========================================
 function updateOrchestrator() {
+    if (state.overridePending) return;
     const orch = state.orchestrator;
     if (!orch || !UI.orchestratorPanel) return;
 
@@ -502,7 +512,9 @@ function updateOrchestrator() {
     console.log(`[Orchestrator HUD] Node: ${activeNode} | Confidence: ${conf} | Waiting: ${orch.waiting_for_human} | Affected: ${affectedStr}`);
 
     // HITL Overlay
-    if (orch.waiting_for_human && UI.hitlOverlay) {
+    if (orch.waiting_for_human && UI.hitlOverlay && !state.overridePending) {
+        document.getElementById("hitl-approve").disabled = false;
+        document.getElementById("hitl-reject").disabled = false;
         UI.hitlOverlay.style.display = 'flex';
         if (UI.hitlDetails) {
             UI.hitlDetails.innerHTML = `
@@ -522,67 +534,49 @@ function updateOrchestrator() {
 // ORCHESTRATOR OVERRIDE (HITL)
 // ==========================================
 async function orchestratorOverride(approved) {
-    const action = approved ? 'APPROVE' : 'REJECT';
-    console.log(`[Orchestrator HITL] Operator decision: ${action}`);
-    
+    if (state.overridePending) return;
+    state.overridePending = true;
+    state.overrideEpoch++;
     const approveBtn = document.getElementById('hitl-approve');
     const rejectBtn = document.getElementById('hitl-reject');
-    
-    // Disable both buttons immediately to prevent double-clicks
-    if (approveBtn) approveBtn.disabled = true;
-    if (rejectBtn) rejectBtn.disabled = true;
-    
-    if (!approved && rejectBtn) {
-        // Show loading state on REJECT — system is looping back to generate_plan
-        rejectBtn.textContent = '🔄 Recalculating...';
-        rejectBtn.style.opacity = '0.7';
-        rejectBtn.style.cursor = 'wait';
-        console.log('[Orchestrator HITL] Reject clicked — sending to backend, graph will loop to GENERATE_PLAN...');
-    }
-    
+    const feedback = document.getElementById('hitl-feedback');
+    approveBtn.disabled = rejectBtn.disabled = true;
+    feedback.textContent = approved ? 'Submitting approval...' : 'Requesting a new plan...';
     try {
-        const res = await fetch('/orchestrator/override', {
+        const res = await apiFetch('/orchestrator/override', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ approved: approved }),
+            body: JSON.stringify({ approved, plan_id: state.orchestrator?.plan_id }),
         });
         const data = await res.json();
-        console.log(`[Orchestrator HITL] Server response:`, data);
-        
-        if (approved) {
-            // APPROVE: hide overlay immediately
-            if (UI.hitlOverlay) UI.hitlOverlay.style.display = 'none';
-        } else {
-            // REJECT: hide overlay after a brief delay so user sees the "Recalculating" state
-            // The overlay will reappear when the graph pauses again at the next HITL interrupt
-            setTimeout(() => {
-                if (UI.hitlOverlay) UI.hitlOverlay.style.display = 'none';
-                // Reset button text for next appearance
-                if (rejectBtn) {
-                    rejectBtn.textContent = '❌ REJECT';
-                    rejectBtn.style.opacity = '1';
-                    rejectBtn.style.cursor = 'pointer';
-                    rejectBtn.disabled = false;
-                }
-                if (approveBtn) approveBtn.disabled = false;
-            }, 1500);
-        }
-    } catch (e) {
-        console.error('[Orchestrator HITL] Override request failed:', e);
-        // Re-enable buttons on error
-        if (approveBtn) approveBtn.disabled = false;
-        if (rejectBtn) {
-            rejectBtn.textContent = '❌ REJECT';
-            rejectBtn.style.opacity = '1';
-            rejectBtn.style.cursor = 'pointer';
-            rejectBtn.disabled = false;
-        }
+        if (!data.success) throw new Error(data.message || 'Decision was not accepted.');
+        state.orchestrator = {...state.orchestrator, waiting_for_human: false,
+            active_node: approved ? 'executing' : 'regenerating'};
+        UI.hitlOverlay.style.display = 'none';
+        feedback.textContent = '';
+    } catch (error) {
+        feedback.textContent = `Decision could not be confirmed: ${error.message}. Check the current plan and retry if still pending.`;
+        UI.hitlOverlay.style.display = 'flex';
+    } finally {
+        state.overridePending = false;
+        state.overrideEpoch++;
+        approveBtn.disabled = rejectBtn.disabled = false;
     }
+}
+
+async function apiFetch(url, options = {}) {
+    const response = await fetch(url, {...options, signal: AbortSignal.timeout(10000)});
+    if (!response.ok) throw new Error(`Request failed (${response.status})`);
+    return response;
 }
 
 async function run() {
     await fetchInitial();
-    setInterval(pollData, 200);
+    async function pollNext() {
+        await pollData();
+        setTimeout(pollNext, 200);
+    }
+    pollNext();
 }
 
 // Start

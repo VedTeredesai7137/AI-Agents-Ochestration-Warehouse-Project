@@ -326,14 +326,10 @@ body {
     border-radius: 4px 8px 8px 4px;
     padding: 10px;
     margin-bottom: 8px;
-    animation: slideIn 0.3s ease-out;
+    animation: none;
     font-size: 0.875rem;
 }
 
-@keyframes slideIn {
-    from { opacity: 0; transform: translateX(20px); }
-    to { opacity: 1; transform: translateX(0); }
-}
 
 .message-card.msg-CFP { border-left-color: var(--msg-cfp); }
 .message-card.msg-PROPOSAL { border-left-color: var(--msg-proposal); }
@@ -630,3 +626,37 @@ body {
     transform: translateY(-2px);
 }
 
+
+/* Keep long message payloads readable without widening the panel. */
+.message-card .msg-body { overflow-wrap: anywhere; }
+#message-feed-latest {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--text-secondary);
+    border-radius: 6px;
+    padding: 5px 9px;
+    cursor: pointer;
+}
+#hitl-feedback { color: var(--status-error); font-size: 0.85rem; }
+
+.message-bus-panel { min-height: 0; min-width: 0; }
+.message-bus-panel .panel-header { flex-shrink: 0; }
+.message-feed-toolbar {
+    flex: 0 0 auto;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--panel-border);
+}
+#message-feed-status {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    margin: 0 0 8px;
+}
+#message-feed-latest { width: 100%; font-variant-numeric: tabular-nums; }
+#message-feed-latest:disabled { opacity: 0.5; cursor: default; }
+#message-bus-content {
+    min-height: 0;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    overflow-anchor: none;
+}

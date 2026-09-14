@@ -9,6 +9,9 @@ Provides:
 """
 
 import time
+import threading
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -66,6 +69,9 @@ class MessageBus:
     def __init__(self):
         self._inboxes: dict[str, list[Message]] = {}
         self._next_id: int = 1
+        self.session_id = uuid.uuid4().hex
+        self._history = deque(maxlen=1000)
+        self._history_lock = threading.Lock()
 
     def subscribe(self, agent_id: str):
         """Register an agent's inbox. Idempotent."""
@@ -77,6 +83,7 @@ class MessageBus:
         Deliver a message to a specific recipient's inbox.
         If the recipient has not subscribed, the message is silently dropped.
         """
+        self._record(message)
         if message.recipient in self._inboxes:
             self._inboxes[message.recipient].append(message)
 
@@ -85,6 +92,7 @@ class MessageBus:
         Deliver a copy of the message to every subscribed inbox
         except the sender's own.
         """
+        self._record(message)
         for agent_id, inbox in self._inboxes.items():
             if agent_id != message.sender:
                 inbox.append(message)
@@ -133,3 +141,13 @@ class MessageBus:
     def __repr__(self):
         total = sum(len(v) for v in self._inboxes.values())
         return f"MessageBus(subscribers={len(self._inboxes)}, pending={total})"
+
+    def _record(self, message):
+        with self._history_lock:
+            self._history.append({"id": message.id, "sender": message.sender,
+                                  "recipient": message.recipient, "type": message.message_type.value,
+                                  "payload": dict(message.payload), "timestamp": message.timestamp})
+
+    def history(self):
+        with self._history_lock:
+            return {"session_id": self.session_id, "messages": list(self._history)}

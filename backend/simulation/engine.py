@@ -147,14 +147,15 @@ class SimulationEngine:
                 f"{robot.current_task}"
             )
 
-        station = self.charging_manager.get_nearest_station(
-            robot
-        )
-
-        robot.path = self.pathfinder.find_path(
-            (robot.position.x, robot.position.y),
-            station
-        )
+        robot.path = self.charging_manager.get_charge_path(robot, self.pathfinder)
+        robot.carrying_item = False
+        robot.delivery_path = []
+        if not robot.path or len(robot.path) - 1 > robot.battery:
+            robot.path = []
+            robot.current_task = None
+            robot.status = RobotStatus.NEEDS_CHARGE
+            print(f"[CHARGE ERROR] Robot {robot.id}: cannot reach a charger.")
+            return
 
         robot.current_task = None
         robot.status = RobotStatus.CHARGING
@@ -223,7 +224,7 @@ class SimulationEngine:
 
             if len(robot.path) <= 1:
 
-                if robot.status == RobotStatus.CHARGING:
+                if robot.status == RobotStatus.CHARGING and self.charging_manager.at_station(robot, self.pathfinder.warehouse):
 
                     robot.battery += 10
 
@@ -238,6 +239,10 @@ class SimulationEngine:
 
                 continue
 
+            if robot.battery < 1:
+                robot.battery = max(0, robot.battery)
+                robot.status = RobotStatus.NEEDS_CHARGE
+                continue
             next_x, next_y = robot.path[1]
 
             success, _ = self.collision_manager.reserve_cell(
@@ -253,7 +258,7 @@ class SimulationEngine:
 
             robot.path.pop(0)
 
-            robot.battery -= 1
+            robot.battery = max(0, robot.battery - 1)
 
             print(
                 f"Robot {robot.id} -> ({next_x},{next_y}) "

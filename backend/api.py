@@ -374,6 +374,7 @@ def post_simulation_reset():
             negotiation_service,
             simulation
         ) = initialize_simulation()
+        orchestrator_runner.reset()
 
     return {
         "success": True,
@@ -487,6 +488,11 @@ def get_agents_status():
     }
 
 
+@app.get("/agents/message-history")
+def get_message_history():
+    return message_bus.history()
+
+
 @app.get("/agents/messages")
 def get_agents_messages():
     """Return pending messages for every robot agent (peek without consuming)."""
@@ -523,6 +529,7 @@ def get_task_agents_status():
 
 class OrchestratorOverrideRequest(BaseModel):
     approved: bool
+    plan_id: str | None = None
 
 
 @app.get("/orchestrator/state")
@@ -534,5 +541,5 @@ def get_orchestrator_state():
 @app.post("/orchestrator/override")
 def post_orchestrator_override(request: OrchestratorOverrideRequest):
     """Accept human input (Approve/Reject) and resume the paused LangGraph execution."""
-    result = orchestrator_runner.human_override(request.approved)
+    result = orchestrator_runner.human_override(request.approved, request.plan_id)
     return result
