@@ -53,6 +53,12 @@ class Robot(BaseModel):
         default_factory=list
     )
 
+    hold_steps_remaining: int = 0
+    yield_to_robot_id: int | None = None
+    yield_steps_remaining: int = 0
+    orchestration_holds: set[str] = Field(default_factory=set)
+    route_waypoint: tuple[int, int] | None = None
+
     def __str__(self):
 
         return (

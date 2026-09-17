@@ -65,8 +65,12 @@ class AStarPathfinder:
     def find_path(
         self,
         start,
-        goal
+        goal,
+        blocked_cells=None
     ):
+        blocked_cells = set(blocked_cells or ()) - {start}
+        if goal in blocked_cells:
+            return []
         # Pre-validate start and goal are walkable
         if not self.warehouse.is_walkable(start[0], start[1]):
             print(
@@ -135,7 +139,7 @@ class AStarPathfinder:
 
             for neighbor in neighbors:
 
-                if neighbor in closed_set:
+                if neighbor in closed_set or neighbor in blocked_cells:
                     continue
 
                 tentative_g_score = (

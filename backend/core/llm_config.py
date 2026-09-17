@@ -11,7 +11,7 @@ OLLAMA_URL = os.getenv(
 ).strip()
 
 _PROVIDER_MODELS = {
-    "mistral": "mistral",
+    "mistral": "mistral:latest",
     "gemma": "gemma4:12b",
 }
 

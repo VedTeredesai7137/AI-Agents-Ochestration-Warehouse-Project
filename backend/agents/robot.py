@@ -16,6 +16,9 @@ This agent participates in the Contract Net Protocol by:
   4. Receiving TASK_AWARDED messages and updating goal/memory.
 """
 
+from collections import deque
+
+from backend.core.events import logger
 from backend.core.models import RobotStatus
 from backend.agents.message_bus import MessageType
 
@@ -66,6 +69,7 @@ class RobotAgent:
         self.agent_id = f"robot_{robot.id}"
 
         self.messages = []
+        self.context = {}
 
         self.beliefs = {
             "battery_low": False,
@@ -81,7 +85,7 @@ class RobotAgent:
         self.goal = AgentGoal.IDLE
         self.has_greeted = False
         self.blocked_counter = 0
-        self.memory = []
+        self.memory = deque(maxlen=300)
         self.current_plan = []
 
         # Subscribe to message bus
@@ -146,25 +150,34 @@ class RobotAgent:
         robot = self.robot
         is_emergency = msg.message_type == MessageType.EMERGENCY_CFP
 
+        # Control actions also exclude this robot from new CNP work.
+        if robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
+            return
         # Eligibility check
         if not is_emergency and robot.current_task is not None:
             return
         if robot.battery < 30:
             return
-        if robot.status == RobotStatus.CHARGING:
+        if robot.status in (RobotStatus.CHARGING, RobotStatus.NEEDS_CHARGE, RobotStatus.NEGOTIATING):
             return
 
         task_id = msg.payload.get("task_id")
         pickup_x = msg.payload.get("pickup_x")
         pickup_y = msg.payload.get("pickup_y")
 
-        # Calculate bid: Manhattan distance + battery penalty
+        # Route/energy feasibility includes explicit recharge stops, never a doomed delivery.
+        ctx = self.context
+        task = ctx.get("task_manager") and ctx["task_manager"].get_task(task_id)
+        offer = ctx["charging_manager"].task_offer(robot, task, ctx["pathfinder"]) if task else None
+        if task and offer is None:
+            return
+        # Compatibility for standalone message-only agents without a simulation context.
         distance = (
             abs(robot.position.x - pickup_x)
             + abs(robot.position.y - pickup_y)
         )
         battery_penalty = (100 - robot.battery) * 0.1
-        estimated_cost = distance + battery_penalty
+        estimated_cost = offer if offer is not None else distance + battery_penalty
 
         # Submit proposal
         self.send_message(
@@ -233,8 +246,13 @@ class RobotAgent:
         charge_path = []
         if ctx.get("charging_manager") and ctx.get("pathfinder"):
             charge_path = ctx["charging_manager"].get_charge_path(robot, ctx["pathfinder"])
-        reserve = max(20, len(charge_path) - 1 + 5) if charge_path else 100
-        self.beliefs["battery_low"] = robot.battery <= reserve
+        reserve = len(charge_path) - 1 + 5 if charge_path else 100
+        if robot.current_task is not None and robot.status != RobotStatus.CHARGING and not robot.orchestration_holds:
+            self._plan_task_charging(ctx)
+        # Owned tasks use their planned charging itinerary; do not drop a feasible parcel.
+        if robot.current_task is not None and robot.status != RobotStatus.NEEDS_CHARGE:
+            reserve = -1
+        self.beliefs["battery_low"] = robot.battery <= reserve or (robot.current_task is None and robot.battery < 30)
         self.beliefs["battery_full"] = robot.battery >= 100
         self.beliefs["has_task"] = robot.current_task is not None
         self.beliefs["carrying_item"] = robot.carrying_item
@@ -252,28 +270,17 @@ class RobotAgent:
         else:
             self.beliefs["path_blocked"] = False
 
-        # Initial greeting when simulation/agent starts, regardless of step or other conditions
         if negotiation_service and not self.has_greeted:
             self.has_greeted = True
             negotiation_service.generate_initial_greeting(robot.id)
-
-        # Check for greeting conditions when passing by other robots
-        robot_manager = ctx.get("robot_manager")
-        if negotiation_service and robot_manager:
-            # Check nearby robots for greeting
-            for other_robot in robot_manager.robots:
-                if other_robot.id == robot.id:
-                    continue
-                dist = abs(robot.position.x - other_robot.position.x) + \
-                       abs(robot.position.y - other_robot.position.y)
-                if dist <= 2:
-                    last_greeted = self.beliefs.get("last_greeted")
-                    if last_greeted != other_robot.id:
-                        self.beliefs["last_greeted"] = other_robot.id
-                        negotiation_service.generate_greeting(robot.id, other_robot.id)
-
-    def _remember(self, event, data):
-        self.memory.append({"event": event, "data": data})
+        # Existing social visibility, with bounded local messages and no model call.
+        if negotiation_service and ctx.get("robot_manager"):
+            nearby = next((other for other in ctx["robot_manager"].robots
+                           if other.id != robot.id and abs(other.position.x-robot.position.x)
+                           + abs(other.position.y-robot.position.y) <= 2), None)
+            if nearby and self.beliefs.get("last_greeted") != nearby.id:
+                self.beliefs["last_greeted"] = nearby.id
+                negotiation_service.generate_greeting(robot.id, nearby.id)
 
     # ------------------------------------------------------------------
     #  DECISION — choose the next action
@@ -292,6 +299,8 @@ class RobotAgent:
         b = self.beliefs
         robot = self.robot
 
+        if robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
+            return "hold"
         if robot.status == RobotStatus.NEGOTIATING:
             return "negotiating"
 
@@ -303,7 +312,7 @@ class RobotAgent:
         # Priority 2 — currently charging
         if robot.status == RobotStatus.CHARGING:
             self.goal = AgentGoal.CHARGE
-            if b["at_charger"]:
+            if b["at_charger"] and b["at_destination"]:
                 if b["battery_full"]:
                     return "charge_complete"
                 return "charge"
@@ -313,6 +322,8 @@ class RobotAgent:
 
         # Priority 3 — at destination with a task
         if b["at_destination"] and b["has_task"]:
+            if not robot.path:
+                return "recover"
             if not b["carrying_item"]:
                 return "pickup"
             else:
@@ -356,6 +367,8 @@ class RobotAgent:
 
     def _action_handlers(self):
         return {
+            "hold": self._handle_hold,
+            "recover": self._recover_route,
             "need_charge": self._handle_need_charge,
             "charge": self._handle_charge,
             "charge_complete": self._handle_charge_complete,
@@ -372,69 +385,84 @@ class RobotAgent:
 
     # ---- need_charge ----
 
-    def _handle_need_charge(self, ctx):
-        """Unassign current task, compute path to nearest charger."""
+    def _handle_hold(self, ctx):
         robot = self.robot
-        task_manager = ctx["task_manager"]
-        charging_manager = ctx["charging_manager"]
-        pathfinder = ctx["pathfinder"]
+        if robot.orchestration_holds:
+            return
+        robot.hold_steps_remaining = max(0, robot.hold_steps_remaining - 1)
+        robot.yield_steps_remaining = max(0, robot.yield_steps_remaining - 1)
+        if not robot.yield_steps_remaining:
+            robot.yield_to_robot_id = None
 
+    def start_charging(self, ctx, charge_path=None):
+        """Preflight before releasing a task. Also used by the action executor."""
+        robot = self.robot
+        path = charge_path if charge_path is not None else ctx["charging_manager"].get_charge_path(robot, ctx["pathfinder"], congestion=True)
+        if not path or len(path) - 1 > robot.battery:
+            raise ValueError("No battery-feasible route to a real charger")
         if robot.current_task is not None:
-            released_task_id = robot.current_task
-            task_manager.unassign_task(robot.current_task)
-            self._remember(
-                "released_task",
-                {"task_id": released_task_id}
-            )
-            print(
-                f"Robot {robot.id} released Task "
-                f"{released_task_id}"
-            )
-
-            # Broadcast TASK_RELEASED so other agents and TaskAgents know
-            self.broadcast(
-                MessageType.TASK_RELEASED,
-                {"robot_id": robot.id, "task_id": released_task_id}
-            )
-
-        robot.current_task = None
-        robot.carrying_item = False
+            ctx["task_manager"].release_task(robot, self.message_bus, "going_to_charger")
+        robot.path = list(path)
         robot.delivery_path = []
-        charge_path = charging_manager.get_charge_path(robot, pathfinder)
-        station = charge_path[-1] if charge_path else None
-
-        if not charge_path:
-            # No valid path to charger — stay IDLE and retry next tick
-            print(
-                f"[CHARGE ERROR] Robot {robot.id}: no valid path to "
-                f"charger at {station}. Staying IDLE."
-            )
-            robot.current_task = None
-            robot.path = []
-            robot.status = RobotStatus.IDLE
-            self._remember("charge_path_failed", {"station": station})
-            return
-
-        if len(charge_path) - 1 > robot.battery:
-            print(f"[CHARGE ERROR] Robot {robot.id}: insufficient energy to reach charger; assistance needed.")
-            robot.path = []
-            robot.status = RobotStatus.NEEDS_CHARGE
-            return
-        robot.path = charge_path
-        robot.current_task = None
+        robot.carrying_item = False
+        robot.route_waypoint = None
+        if ctx.get("engine") and robot.status != RobotStatus.CHARGING:
+            ctx["engine"].measurements["charging_events"] += 1
         robot.status = RobotStatus.CHARGING
+        self.goal = AgentGoal.CHARGE
+        self.broadcast(MessageType.LOW_BATTERY, {"robot_id": robot.id, "battery": robot.battery})
 
-        # Broadcast LOW_BATTERY to inform peers
-        self.broadcast(
-            MessageType.LOW_BATTERY,
-            {"robot_id": robot.id, "battery": robot.battery}
-        )
+    def _plan_task_charging(self, ctx):
+        robot = self.robot
+        task = ctx["task_manager"].get_task(robot.current_task)
+        if not task or task.completed or task.assigned_robot != robot.id:
+            return
+        charging, pf = ctx["charging_manager"], ctx["pathfinder"]
+        goal = (task.delivery_x, task.delivery_y) if robot.carrying_item else (task.pickup_x, task.pickup_y)
+        rate = 2 if robot.carrying_item else 1
+        escape = charging.nearest_distance(goal, pf)*(1 if robot.carrying_item else 2)+charging.RESERVE
+        # Keep working routes/LLM waypoints when feasible. A* safety remains in movement.
+        if robot.path and charging.distance((robot.position.x,robot.position.y),goal,pf)*rate+escape <= robot.battery:
+            return
+        trip = charging.journey((robot.position.x,robot.position.y), goal, robot.battery, pf,
+                                loaded=robot.carrying_item, pickup=not robot.carrying_item)
+        if trip and tuple(trip[0][-1]) != goal:
+            # A single inbound owner per bay leaves room for charged robots to exit.
+            stop = tuple(trip[0][-1])
+            others = ctx.get("robot_manager").robots if ctx.get("robot_manager") else []
+            if any(r.id != robot.id and (r.position.x,r.position.y) == stop
+                   or r.id != robot.id and r.status == RobotStatus.CHARGING and r.path and tuple(r.path[-1]) == stop
+                   for r in others):
+                alternative = charging.get_charge_path(robot,pf,congestion=True,loaded=robot.carrying_item)
+                if alternative:
+                    trip = (alternative,trip[1],trip[2])
+                else:
+                    # Do not join a blocked bay's entrance queue. Retry next tick.
+                    robot.hold_steps_remaining = max(robot.hold_steps_remaining,1)
+                    return
+            robot.path = trip[0]
+            robot.route_waypoint = None
+            robot.status = RobotStatus.CHARGING
+            if ctx.get("engine"):
+                ctx["engine"].measurements["charging_events"] += 1
+        elif trip:
+            # A traffic detour may exceed the remaining budget even though the
+            # direct leg is feasible. Replace that stale detour before movement.
+            robot.path = trip[0]
+        elif trip is None:
+            # A changed aisle can invalidate an accepted itinerary. Safe release is
+            # still available; battery-impossible motion is never attempted.
+            self._handle_need_charge(ctx)
 
-        self._remember(
-            "going_to_charge",
-            {"station": station}
-        )
-        print(f"Robot {robot.id} going to charge")
+    def _handle_need_charge(self, ctx):
+        try:
+            self.start_charging(ctx)
+        except ValueError as error:
+            if self.robot.status != RobotStatus.NEEDS_CHARGE:
+                logger.warning("[CHARGE ERROR] robot_id=%s reason=%s", self.robot.id, error)
+            # Keep task/parcel ownership; assistance may be necessary.
+            self.robot.path = []
+            self.robot.status = RobotStatus.NEEDS_CHARGE
 
     # ---- charge ----
 
@@ -444,7 +472,7 @@ class RobotAgent:
         if not ctx["charging_manager"].at_station(robot, ctx["warehouse"]):
             print(f"[CHARGE ERROR] Robot {robot.id}: cannot charge away from a station.")
             return
-        robot.battery = min(100, max(0, robot.battery) + 10)
+        robot.battery = min(100, max(0, robot.battery) + ctx["charging_manager"].CHARGE_RATE)
         if robot.battery >= 100:
             robot.battery = 100
 
@@ -458,247 +486,178 @@ class RobotAgent:
         self.goal = AgentGoal.IDLE
 
         self._remember("fully_charged", {})
-        print(f"Robot {robot.id} fully charged")
+        if robot.current_task is not None:
+            robot.status = RobotStatus.DELIVERING if robot.carrying_item else RobotStatus.MOVING
+            robot.path = []
+            self._recover_route(ctx)
+        else:
+            robot.path = []
+        logger.debug("[SIM] robot_id=%s fully charged", robot.id)
 
     # ---- move ----
 
-    def _handle_move(self, ctx):
-        """Attempt to move one step along the current path."""
+    def _recover_route(self, ctx):
         robot = self.robot
-        collision_manager = ctx["collision_manager"]
-        pathfinder = ctx["pathfinder"]
+        task = ctx["task_manager"].get_task(robot.current_task)
+        destination = None
+        if robot.status == RobotStatus.CHARGING:
+            path = ctx["charging_manager"].get_charge_path(robot, ctx["pathfinder"], loaded=robot.carrying_item)
+            destination = path[-1] if path else None
+        elif task and not task.completed:
+            destination = ((task.delivery_x, task.delivery_y) if robot.carrying_item
+                           else (task.pickup_x, task.pickup_y))
+        elif robot.path:
+            destination = robot.path[-1]
+        start = (robot.position.x, robot.position.y)
+        path = []
+        if destination is not None:
+            if robot.route_waypoint and start != robot.route_waypoint:
+                first = ctx["pathfinder"].find_path(start, robot.route_waypoint)
+                second = ctx["pathfinder"].find_path(robot.route_waypoint, destination)
+                path = first + second[1:] if first and second else []
+            else:
+                path = ctx["pathfinder"].find_path(start, destination)
+        robot.path = path
+        if path:
+            logger.info("[OBSTACLE BYPASS RECOVERY] robot_id=%s length=%s", robot.id, len(path))
+        else:
+            logger.warning("[OBSTACLE BYPASS RECOVERY FAILED] robot_id=%s destination=%s", robot.id, destination)
 
+    def _handle_move(self, ctx):
+        """Full remaining-path validation precedes every orthogonal movement."""
+        robot = self.robot
         if len(robot.path) <= 1:
             return
-
+        start = (robot.position.x, robot.position.y)
+        pathfinder = ctx["pathfinder"]
+        if tuple(robot.path[0]) != start or not pathfinder._validate_path_integrity(robot.path):
+            logger.warning("[OBSTACLE BYPASS DETECTED] robot_id=%s path invalidated", robot.id)
+            self._remember("path_invalidated", {"reason": "invalid_remaining_path"})
+            self._recover_route(ctx)
+            return
         energy = 2 if robot.carrying_item else 1
         if robot.battery < energy:
-            print(f"[CHARGE ERROR] Robot {robot.id}: insufficient movement energy; assistance needed.")
+            logger.warning("[CHARGE ERROR] robot_id=%s insufficient movement energy", robot.id)
             robot.battery = max(0, robot.battery)
             robot.status = RobotStatus.NEEDS_CHARGE
             return
         next_x, next_y = robot.path[1]
-
-        # --- Full remaining-path integrity check ---
-        # Validate ALL remaining cells in the path, not just the next one.
-        # If any future cell is unwalkable, the entire path is corrupt and
-        # must be recomputed. This catches stale paths from prior grid states.
-        warehouse = ctx.get("warehouse")
-        if warehouse:
-            for step_idx in range(1, len(robot.path)):
-                check_x, check_y = robot.path[step_idx]
-                if not warehouse.is_walkable(check_x, check_y):
-                    print(
-                        f"[OBSTACLE BYPASS DETECTED] Robot {robot.id}: "
-                        f"path cell ({check_x},{check_y}) at step {step_idx} "
-                        f"is NOT walkable (grid='{warehouse.grid[check_y][check_x]}'). "
-                        f"Robot pos=({robot.position.x},{robot.position.y}), "
-                        f"status={robot.status.value}, task={robot.current_task}. "
-                        f"Full path: {robot.path}. "
-                        f"Path INVALIDATED — attempting recompute."
-                    )
-                    self._remember("path_invalidated", {
-                        "cell": (check_x, check_y),
-                        "step_index": step_idx,
-                        "reason": "obstacle_in_remaining_path",
-                        "grid_value": warehouse.grid[check_y][check_x],
-                    })
-
-                    # Attempt to recompute path to the original destination
-                    if len(robot.path) > 0:
-                        destination = robot.path[-1]
-                        new_path = pathfinder.find_path(
-                            (robot.position.x, robot.position.y),
-                            destination
-                        )
-                        if new_path:
-                            robot.path = new_path
-                            print(
-                                f"[OBSTACLE BYPASS RECOVERY] Robot {robot.id}: "
-                                f"recomputed valid path to {destination}, "
-                                f"length={len(new_path)}"
-                            )
-                        else:
-                            robot.path = []
-                            print(
-                                f"[OBSTACLE BYPASS RECOVERY FAILED] Robot {robot.id}: "
-                                f"no valid path to {destination}. Path cleared."
-                            )
-                    else:
-                        robot.path = []
-                    return
-
-        success, conflicting_robot_id = collision_manager.reserve_cell(next_x, next_y, robot.id)
+        if ctx.get("engine"):
+            task = ctx["task_manager"].get_task(robot.current_task)
+            delivering_now = task and robot.carrying_item and (next_x,next_y) == (task.delivery_x,task.delivery_y) and robot.status != RobotStatus.CHARGING
+            return_rate = 1 if delivering_now else energy
+            escape = ctx["charging_manager"].nearest_distance((next_x,next_y),pathfinder)*return_rate
+            if energy+escape > robot.battery:
+                # A congestion reroute must not spend the last energy needed to
+                # reach charging. Replan a loaded stop without losing ownership.
+                path = ctx["charging_manager"].get_charge_path(robot,pathfinder,loaded=robot.carrying_item)
+                if path and (len(path)-1)*energy <= robot.battery:
+                    robot.path = path
+                    if robot.status != RobotStatus.CHARGING:
+                        ctx["engine"].measurements["charging_events"] += 1
+                    robot.status = RobotStatus.CHARGING
+                else:
+                    robot.path = []
+                    robot.status = RobotStatus.NEEDS_CHARGE
+                return
+        collision = ctx["collision_manager"]
+        success, other = collision.reserve_cell(next_x, next_y, robot.id)
         if not success:
             self.blocked_counter += 1
-            print(f"\n[⚠️ DEADLOCK] Robot {robot.id} blocked at ({next_x}, {next_y}). Strike {self.blocked_counter}/3.")
-            
-            self._remember(
-                "blocked",
-                {"cell": (next_x, next_y)}
-            )
-            # Broadcast BLOCKED_PATH
-            self.broadcast(
-                MessageType.BLOCKED_PATH,
-                {"robot_id": robot.id, "cell": (next_x, next_y)}
-            )
-            
-            if self.blocked_counter >= 3:
-                negotiation_service = ctx.get("negotiation_service")
-                if conflicting_robot_id is not None and robot.status != RobotStatus.NEGOTIATING and negotiation_service:
-                    previous_status = robot.status
-                    robot.status = RobotStatus.NEGOTIATING
-                    
-                    def on_negotiation_complete(winner_id, reason):
-                        # Default back to IDLE so it re-decides next tick
-                        robot.status = previous_status
-                        
-                    negotiation_service.resolve_deadlock(robot.id, conflicting_robot_id, next_x, next_y, on_negotiation_complete)
-                
+            self.broadcast(MessageType.BLOCKED_PATH, {"robot_id": robot.id, "cell": (next_x, next_y)})
+            if ctx.get("engine"):
+                ctx["engine"].request_deadlock(robot.id, other, (next_x, next_y))
             return
-
         self.blocked_counter = 0
-        robot.position.x = next_x
-        robot.position.y = next_y
+        if ctx.get("engine"):
+            ctx["engine"].record_movement(robot.id)
+        robot.position.x, robot.position.y = next_x, next_y
+        collision.moved(robot.id, start, (next_x, next_y))
         robot.path.pop(0)
         robot.battery = max(0, robot.battery - energy)
-
-        print(
-            f"Robot {robot.id} -> ({next_x},{next_y}) "
-            f"Battery={robot.battery:.0f}"
-        )
-
-        # Post-move arrival checks
+        if robot.route_waypoint == (next_x, next_y):
+            robot.route_waypoint = None
+        logger.debug("[SIM] robot_id=%s position=%s battery=%s", robot.id, (next_x, next_y), robot.battery)
         if len(robot.path) == 1:
             self._on_arrival(ctx)
 
     def _on_arrival(self, ctx):
-        """Handle events that trigger when the robot reaches a destination."""
-        robot = self.robot
-        task_manager = ctx["task_manager"]
-
-        if robot.status == RobotStatus.CHARGING:
-            self._remember(
-                "arrived_at_charger", {}
-            )
-            print(f"Robot {robot.id} arrived at charger")
-            return
-
-        if robot.current_task is not None:
-            if not robot.carrying_item:
-                # Validate delivery_path before switching
-                if not robot.delivery_path:
-                    print(
-                        f"[DELIVERY PATH ERROR] Robot {robot.id}: "
-                        f"delivery_path is empty at pickup arrival. "
-                        f"Releasing task {robot.current_task}."
-                    )
-                    task_manager.unassign_task(robot.current_task)
-                    self.broadcast(
-                        MessageType.TASK_RELEASED,
-                        {"robot_id": robot.id, "task_id": robot.current_task}
-                    )
-                    self._remember("delivery_path_empty", {"task_id": robot.current_task})
-                    robot.current_task = None
-                    robot.carrying_item = False
-                    robot.delivery_path = []
-                    robot.status = RobotStatus.IDLE
-                    self.goal = AgentGoal.IDLE
-                    return
-
-                robot.carrying_item = True
-                robot.path = robot.delivery_path
-                robot.status = RobotStatus.DELIVERING
-                self.goal = AgentGoal.DELIVER
-
-                self._remember(
-                    "picked_item",
-                    {"task_id": robot.current_task}
-                )
-                print(f"Robot {robot.id} picked item")
+        if self.robot.status == RobotStatus.CHARGING:
+            self._remember("arrived_at_charger", {})
+        elif self.robot.current_task is not None:
+            if self.robot.carrying_item:
+                self._handle_deliver(ctx)
             else:
-                self._remember(
-                    "delivered_task",
-                    {"task_id": robot.current_task}
-                )
-                print(
-                    f"Robot {robot.id} delivered Task "
-                    f"{robot.current_task}"
-                )
+                self._handle_pickup(ctx)
 
-                task_manager.complete_task(robot.current_task)
-                robot.current_task = None
-                robot.carrying_item = False
-                robot.delivery_path = []
-                robot.status = RobotStatus.IDLE
-                self.goal = AgentGoal.IDLE
-
-    # ---- pickup ----
+    def _at_task_destination(self, ctx, delivery=False):
+        robot = self.robot
+        task = ctx["task_manager"].get_task(robot.current_task)
+        if not task or task.completed or task.assigned_robot != robot.id:
+            return False
+        target = (task.delivery_x, task.delivery_y) if delivery else (task.pickup_x, task.pickup_y)
+        return bool(robot.path) and (robot.position.x, robot.position.y) == target
 
     def _handle_pickup(self, ctx):
-        """Pick up item at current location."""
         robot = self.robot
-        task_manager = ctx["task_manager"]
-
-        # Validate delivery_path before switching
-        if not robot.delivery_path:
-            print(
-                f"[DELIVERY PATH ERROR] Robot {robot.id}: "
-                f"delivery_path is empty during pickup. "
-                f"Releasing task {robot.current_task}."
-            )
-            task_manager.unassign_task(robot.current_task)
-            self.broadcast(
-                MessageType.TASK_RELEASED,
-                {"robot_id": robot.id, "task_id": robot.current_task}
-            )
-            self._remember("delivery_path_empty", {"task_id": robot.current_task})
-            robot.current_task = None
-            robot.carrying_item = False
-            robot.delivery_path = []
-            robot.status = RobotStatus.IDLE
-            self.goal = AgentGoal.IDLE
+        if not self._at_task_destination(ctx):
+            self._recover_route(ctx)
             return
-
+        # Empty/stale delivery paths never become a pickup transition.
+        if (not robot.delivery_path or tuple(robot.delivery_path[0]) != (robot.position.x, robot.position.y)
+                or not ctx["pathfinder"]._validate_path_integrity(robot.delivery_path)):
+            logger.warning("[DELIVERY PATH ERROR] robot_id=%s releasing task_id=%s", robot.id, robot.current_task)
+            ctx["task_manager"].release_task(robot, self.message_bus, "invalid_delivery_path")
+            return
         robot.carrying_item = True
-        robot.path = robot.delivery_path
+        robot.path = list(robot.delivery_path)
         robot.status = RobotStatus.DELIVERING
         self.goal = AgentGoal.DELIVER
-
-        self._remember(
-            "picked_item",
-            {"task_id": robot.current_task}
-        )
-        print(f"Robot {robot.id} picked item")
-
-    # ---- deliver ----
+        self._remember("picked_item", {"task_id": robot.current_task})
 
     def _handle_deliver(self, ctx):
-        """Deliver item at current location."""
         robot = self.robot
-        task_manager = ctx["task_manager"]
-
-        self._remember(
-            "delivered_task",
-            {"task_id": robot.current_task}
-        )
-        print(
-            f"Robot {robot.id} delivered Task "
-            f"{robot.current_task}"
-        )
-
-        task_manager.complete_task(robot.current_task)
+        if not self._at_task_destination(ctx, delivery=True) or not robot.carrying_item:
+            self._recover_route(ctx)
+            return
+        self._remember("delivered_task", {"task_id": robot.current_task})
+        ctx["task_manager"].complete_task(robot.current_task, robot=robot)
         robot.current_task = None
         robot.carrying_item = False
+        robot.path = []
         robot.delivery_path = []
+        robot.route_waypoint = None
         robot.status = RobotStatus.IDLE
         self.goal = AgentGoal.IDLE
 
     # ---- idle ----
 
     def _handle_idle(self, ctx):
-        """Nothing to do right now."""
-        pass
+        """Vacate charging/service cells and next-step traffic using normal movement."""
+        robot = self.robot
+        robots = ctx.get("robot_manager").robots if ctx.get("robot_manager") else []
+        pos = (robot.position.x,robot.position.y)
+        next_cells = {tuple(r.path[1]) for r in robots if r.id != robot.id and len(r.path)>1}
+        # Parked robots must also leave passing space around a blocked episode.
+        # The blocked robot's fallback can have cleared its path, so next-cell
+        # intent alone misses this case (especially near a charging bay).
+        blocked = [(r.position.x,r.position.y) for r in robots
+                   if ctx.get("engine") and r.id in ctx["engine"]._deadlocks and r.id != robot.id]
+        distance = lambda p: min((abs(p[0]-b[0])+abs(p[1]-b[1]) for b in blocked), default=1000)
+        nearby_contention = distance(pos) <= 2
+        if pos not in next_cells and not nearby_contention and not ctx["charging_manager"].at_station(robot,ctx["warehouse"]):
+            return
+        occupied = {(r.position.x,r.position.y) for r in robots}
+        routes = {tuple(p) for r in robots if r.id != robot.id for p in r.path}
+        neighbors = [p for p in ctx["warehouse"].get_neighbors(*pos) if p not in occupied | next_cells
+                     and ctx["warehouse"].grid[p[1]][p[0]] != "C"]
+        if neighbors and robot.battery > 5:
+            # Move outward from contention rather than oscillating around it.
+            if nearby_contention:
+                neighbors = [p for p in neighbors if distance(p)>distance(pos)]
+            if neighbors:
+                target = min(neighbors, key=lambda p:(p in routes,-distance(p),p))
+                robot.path = [pos,target]
 
     # ------------------------------------------------------------------
     #  MEMORY helpers
@@ -716,7 +675,7 @@ class RobotAgent:
         """Return recent memory entries."""
         if last_n is None:
             return list(self.memory)
-        return list(self.memory[-last_n:])
+        return list(self.memory)[-last_n:]
 
     # ------------------------------------------------------------------
     #  Full tick (convenience wrapper used by AgentManager)
@@ -726,6 +685,7 @@ class RobotAgent:
         """
         Run one full cycle: process_messages → perceive → decide → act.
         """
+        self.context = context
         self.process_messages()
         self.perceive(
             collision_manager=context.get("collision_manager"),
@@ -733,6 +693,8 @@ class RobotAgent:
             ctx=context
         )
         action = self.decide()
+        if action != "move":
+            self.blocked_counter = 0
         self.act(action, **context)
 
     # ------------------------------------------------------------------

@@ -1,8 +1,12 @@
-# warehouse.py
+from random import Random
+
+from backend.core.settings import Settings
 
 class Warehouse:
 
-    def __init__(self, width, height):
+    def __init__(self, width, height, rng=None):
+        self.rng = rng if rng is not None else Random(Settings.from_env().simulation_seed)
+        self.revision = 0
         self.width = width
         self.height = height
         self.grid = []
@@ -14,17 +18,17 @@ class Warehouse:
         ]
 
     def add_shelves(self):
-        import random
         for row in range(2, self.height - 2, 3):
             for col in range(2, self.width - 2):
-                if random.random() > 0.15:
+                if self.rng.random() > 0.15:
                     self.grid[row][col] = "S"
 
     def add_charging_stations(self):
-        self.grid[0][0] = "C"
-        self.grid[0][1] = "C"
-        self.grid[0][self.width - 1] = "C"
-        self.grid[0][self.width - 2] = "C"
+        # Eight separated service bays on existing open cross-aisles. Adjacent
+        # corner chargers trapped departing robots behind incoming queues.
+        for x, y in ((12,1),(37,1),(12,10),(37,10),(12,22),(37,22),(12,28),(37,28)):
+            if x < self.width and y < self.height:
+                self.grid[y][x] = "C"
 
     def add_robot_spawn_area(self):
         spawned = 0
@@ -35,11 +39,10 @@ class Warehouse:
                     spawned += 1
 
     def add_pillars(self):
-        import random
         pillars = 0
         while pillars < 10:
-            row = random.randint(1, self.height - 2)
-            col = random.randint(1, self.width - 2)
+            row = self.rng.randint(1, self.height - 2)
+            col = self.rng.randint(1, self.width - 2)
             if self.grid[row][col] == ".":
                 self.grid[row][col] = "S"
                 pillars += 1

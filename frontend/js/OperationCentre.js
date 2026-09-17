@@ -81,7 +81,11 @@ async function pollData() {
         ]);
 
         const status = await statusRes.json();
-        if (state.simStatus && status.current_step < state.simStatus.current_step) await fetchInitial();
+        if (state.simStatus && (status.current_step < state.simStatus.current_step ||
+            status.run_id !== state.simStatus.run_id || status.grid_revision !== state.simStatus.grid_revision)) {
+            console.log('[GRID REFRESH] Run or warehouse grid changed.');
+            await fetchInitial();
+        }
         state.simStatus = status;
         state.robots = await robotsRes.json();
         state.tasks = await tasksRes.json();
@@ -320,11 +324,11 @@ function updateNegotiations() {
         html += `
             <div class="log-card" style="border-left: 3px solid ${isAuction ? 'var(--msg-award)' : 'var(--status-negotiating)'}">
                 <div class="log-title">
-                    <span>${log.event}</span>
+                    <span>${escapeHtml(log.event)}</span>
                     <span style="color: var(--text-secondary); font-size: 0.75rem;">${new Date(log.timestamp * 1000).toLocaleTimeString()}</span>
                 </div>
-                <div class="log-detail"><span>Reasoning:</span> ${log.reasoning}</div>
-                <div class="log-detail" style="margin-top: 8px;"><span>Decision:</span> <strong style="color: ${isAuction ? 'var(--status-delivering)' : 'var(--status-idle)'}">${log.decision}</strong></div>
+                <div class="log-detail"><span>Reasoning:</span> ${escapeHtml(log.reasoning)}</div>
+                <div class="log-detail" style="margin-top: 8px;"><span>Decision:</span> <strong style="color: ${isAuction ? 'var(--status-delivering)' : 'var(--status-idle)'}">${escapeHtml(log.decision)}</strong></div>
             </div>
         `;
     });
@@ -402,6 +406,12 @@ function updateUI() {
 // ==========================================
 // ORCHESTRATOR HUD
 // ==========================================
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[char]));
+}
+
 function updateOrchestrator() {
     if (state.overridePending) return;
     const orch = state.orchestrator;
@@ -414,7 +424,7 @@ function updateOrchestrator() {
     // Panel state classes
     panel.classList.remove('orch-active', 'orch-waiting');
 
-    if (!orch.active && !orch.waiting_for_human) {
+    if (!orch.active && !orch.waiting_for_human && !orch.crisis_id) {
         badge.textContent = 'INACTIVE';
         badge.style.color = 'var(--text-secondary)';
         content.innerHTML = '<div class="empty-state">No active crisis orchestration</div>';
@@ -429,7 +439,7 @@ function updateOrchestrator() {
         badge.style.color = 'var(--status-error)';
     } else {
         panel.classList.add('orch-active');
-        badge.textContent = 'ACTIVE';
+        badge.textContent = orch.fallback_used ? 'FALLBACK ACTIVE' : (orch.active ? 'ACTIVE' : 'COMPLETE');
         badge.style.color = 'var(--status-negotiating)';
     }
 
@@ -457,10 +467,10 @@ function updateOrchestrator() {
         return '';
     }
 
-    // Confidence color
-    const conf = orch.confidence_score;
+    // Deterministic execution readiness
+    const conf = orch.validation_score ?? null;
     let confColor = 'var(--status-delivering)';
-    if (conf !== null && conf < 0.85) confColor = 'var(--status-error)';
+    if (conf !== null && conf < (orch.auto_execute_threshold ?? 0.85)) confColor = 'var(--status-error)';
     else if (conf !== null && conf < 0.90) confColor = 'var(--status-charging)';
 
     const confPct = conf !== null ? Math.round(conf * 100) : 0;
@@ -468,13 +478,18 @@ function updateOrchestrator() {
     // Build affected robots display
     const affectedStr = (orch.affected_robots || []).map(id => `R${id}`).join(', ') || 'None';
 
-    // Plan summary
-    let planSummary = 'N/A';
-    if (orch.proposed_plan && orch.proposed_plan.routes) {
-        planSummary = orch.proposed_plan.routes.map(r => `R${r.robot_id}: ${r.action}`).join('<br>');
-    } else if (orch.proposed_plan && orch.proposed_plan.fallback) {
-        planSummary = 'Fallback plan (LLM unavailable)';
-    }
+    // Render model-authored text as escaped text, including reasons.
+    const planSummary = (orch.proposed_plan?.actions || []).map(action => {
+        const target = action.waypoint ? ` via (${action.waypoint.x}, ${action.waypoint.y})` :
+            action.task_id ? ` task ${action.task_id}` : action.yield_to_robot_id ? ` to R${action.yield_to_robot_id}` :
+            action.hold_steps ? ` for ${action.hold_steps} steps` : '';
+        return `<div>R${action.robot_id}: <strong>${escapeHtml(action.action)}</strong>${escapeHtml(target)}: ${escapeHtml(action.reason)}</div>`;
+    }).join('') || 'Pending';
+    const issues = orch.validation_issues || [];
+    const errors = issues.filter(issue => issue.level === 'ERROR').length;
+    const warnings = issues.filter(issue => issue.level === 'WARNING').length;
+    const validationStatus = orch.validation_status === 'INVALID'
+        ? 'PLAN REJECTED BY VALIDATOR. Regenerating...' : (orch.validation_status || 'PENDING');
 
     content.innerHTML = `
         <div class="orch-node-progress">
@@ -493,7 +508,7 @@ function updateOrchestrator() {
                 <span class="val">${affectedStr}</span>
             </div>
             <div class="orch-detail-row">
-                <span class="label">Confidence</span>
+                <span class="label">Validation Score</span>
                 <span class="val" style="color: ${confColor}">${conf !== null ? (confPct + '%') : 'Pending'}</span>
             </div>
             <div class="orch-detail-row">
@@ -502,14 +517,23 @@ function updateOrchestrator() {
             </div>
         </div>
         ${conf !== null ? `
-        <div class="confidence-bar">
-            <div class="confidence-fill" style="width: ${confPct}%; background: ${confColor};"></div>
+        <div class="validation-bar">
+            <div class="validation-fill" style="width: ${confPct}%; background: ${confColor};"></div>
         </div>` : ''}
-        ${orch.error ? `<div style="margin-top: 8px; color: var(--status-error); font-size: 0.75rem;">Error: ${orch.error}</div>` : ''}
+        <div class="orch-detail-row"><span class="label">Validation</span><span class="val">${escapeHtml(validationStatus)}</span></div>
+        <div class="orch-detail-row"><span class="label">Issues</span><span class="val">${errors} errors / ${warnings} warnings</span></div>
+        ${orch.fallback_used ? `<div class="orch-detail-row"><strong>FALLBACK ACTIVE</strong><span>${escapeHtml(orch.fallback_reason)}</span></div>` : ''}
+        ${orch.queued_crises ? `<div class="orch-detail-row"><span>Queued crises</span><span>${orch.queued_crises}</span></div>` : ''}
+        <div style="margin-top: 8px; font-size: 0.8rem;">${planSummary}</div>
+        ${orch.error ? `<div style="margin-top: 8px; color: var(--status-error); font-size: 0.75rem;">Error: ${escapeHtml(orch.error)}</div>` : ''}
     `;
 
     // Console log orchestrator state changes
-    console.log(`[Orchestrator HUD] Node: ${activeNode} | Confidence: ${conf} | Waiting: ${orch.waiting_for_human} | Affected: ${affectedStr}`);
+    const logKey = `${orch.plan_id}:${activeNode}:${orch.waiting_for_human}`;
+    if (state.orchestratorLogKey !== logKey) {
+        console.log(`[Orchestrator HUD] Node: ${activeNode} | Validation Score: ${conf} | Waiting: ${orch.waiting_for_human}`);
+        state.orchestratorLogKey = logKey;
+    }
 
     // HITL Overlay
     if (orch.waiting_for_human && UI.hitlOverlay && !state.overridePending) {
@@ -520,7 +544,8 @@ function updateOrchestrator() {
             UI.hitlDetails.innerHTML = `
                 <div class="orch-detail-row"><span class="label">Crisis Location</span><span class="val">${JSON.stringify(orch.crisis_location)}</span></div>
                 <div class="orch-detail-row"><span class="label">Affected Robots</span><span class="val">${affectedStr}</span></div>
-                <div class="orch-detail-row"><span class="label">Confidence Score</span><span class="val" style="color: var(--status-error)">${confPct}%</span></div>
+                <div class="orch-detail-row"><span class="label">Validation Score</span><span class="val" style="color: var(--status-error)">${confPct}%</span></div>
+                <div class="orch-detail-row"><span class="label">Validation issues</span><span class="val">${errors} errors / ${warnings} warnings</span></div>
                 <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary);">Proposed Plan:</div>
                 <div style="margin-top: 4px; font-size: 0.8rem; color: var(--text-primary);">${planSummary}</div>
             `;

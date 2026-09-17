@@ -495,7 +495,7 @@ body {
     font-weight: 600;
 }
 
-.confidence-bar {
+.validation-bar {
     height: 6px;
     border-radius: 3px;
     background: rgba(255, 255, 255, 0.08);
@@ -503,7 +503,7 @@ body {
     overflow: hidden;
 }
 
-.confidence-fill {
+.validation-fill {
     height: 100%;
     border-radius: 3px;
     transition: width 0.5s ease;

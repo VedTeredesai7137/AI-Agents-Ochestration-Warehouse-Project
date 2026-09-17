@@ -79,7 +79,10 @@ class AgentManager:
               - pathfinder
               - collision_manager
         """
-        for agent in self.agents:
+        winners = {a.robot.yield_to_robot_id for a in self.agents if a.robot.yield_steps_remaining > 0}
+        # Explicit yield targets get first attempt at contested free cells.
+        ordered = sorted(self.agents, key=lambda a: (a.robot.id not in winners, a.robot.id))
+        for agent in ordered:
             agent.tick(**context)
 
     # ------------------------------------------------------------------

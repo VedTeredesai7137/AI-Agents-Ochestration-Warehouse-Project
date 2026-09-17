@@ -8,6 +8,8 @@ Responsibilities:
   - Provide introspection data for the API.
 """
 
+from collections import deque
+
 from backend.agents.task import TaskAgent, TaskAgentStatus
 
 
@@ -28,7 +30,7 @@ class TaskAgentManager:
         self.message_bus = message_bus
         self.task_agents: list[TaskAgent] = []
         self._agent_map: dict[int, TaskAgent] = {}  # task_id -> TaskAgent
-        self.latest_logs = []
+        self.latest_logs = deque(maxlen=300)
 
     def create_agents_for_existing_tasks(self):
         """Create a TaskAgent for every task currently in the TaskManager."""
@@ -68,7 +70,7 @@ class TaskAgentManager:
                 )
                 if log:
                     self.latest_logs.append(log)
-                    print(f"DEBUG: Backend generated auction log for Task {log['task_id']}")
+
 
     def get_agent(self, task_id: int):
         """Return the TaskAgent for the given task_id, or None."""

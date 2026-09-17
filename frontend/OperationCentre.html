@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Warehouse Swarm AI Operations Centre</title>
-    <link href="{{ url_for('static', path='css/OperationCentre.css') }}?v=readable-feed-2" rel="stylesheet">
+    <link href="{{ url_for('static', path='css/OperationCentre.css') }}?v=validated-actions-1" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -109,7 +109,7 @@
         <div class="hitl-modal">
             <div class="hitl-icon">⚠️</div>
             <h2 class="hitl-title">HUMAN APPROVAL REQUIRED</h2>
-            <p class="hitl-subtitle">The LangGraph orchestrator has generated a crisis rerouting plan with <strong>LOW CONFIDENCE</strong>.</p>
+            <p class="hitl-subtitle">The LangGraph orchestrator has generated a valid crisis plan that <strong>REQUIRES OPERATOR REVIEW</strong>.</p>
             <div class="hitl-details" id="hitl-details">
                 <!-- Populated by JS -->
             </div>
@@ -121,6 +121,6 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', path='js/OperationCentre.js') }}?v=readable-feed-2"></script>
+    <script src="{{ url_for('static', path='js/OperationCentre.js') }}?v=validated-actions-1"></script>
 </body>
 </html>

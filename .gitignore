@@ -8,5 +8,12 @@ __pycache__/
 AGENTS.md
 .code-review-graph
 .codex
-tests/
 
+
+.pytest_cache/
+evaluation_results/
+.env.example
+pytest.ini
+tests/
+requirements-dev.txt
+run_benchmark.py

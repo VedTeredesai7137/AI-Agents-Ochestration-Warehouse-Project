@@ -13,6 +13,8 @@ through the MessageBus and lets the winning RobotAgent accept the contract.
 """
 
 from backend.agents.message_bus import MessageType
+from backend.core.models import RobotStatus
+from backend.core.events import logger
 
 
 class TaskAgentStatus:
@@ -67,9 +69,12 @@ class TaskAgent:
         pathfinder : AStarPathfinder
             For computing paths when awarding contracts.
         """
+        if self.status != TaskAgentStatus.CFP_SENT:
+            self.message_bus.get_messages(self.agent_id)
         # Sync with underlying task state
         if self.task.completed:
             self.status = TaskAgentStatus.COMPLETED
+            self.message_bus.unsubscribe(self.agent_id)
             return
 
         if self.status == TaskAgentStatus.COMPLETED:
@@ -98,7 +103,7 @@ class TaskAgent:
         is_emergency = self.task.priority == "CRITICAL"
         msg_type = MessageType.EMERGENCY_CFP if is_emergency else MessageType.CFP
         if is_emergency:
-            print(f"\n[🔥 EMERGENCY] CRITICAL TASK {self.task.id} INJECTED! Preempting normal operations.")
+            logger.info("[CNP][EMERGENCY] task_id=%s issuing critical CFP", self.task.id)
         msg = self.message_bus.create_message(
             sender=self.agent_id,
             recipient="ALL",
@@ -135,55 +140,43 @@ class TaskAgent:
         self.received_proposals.sort(
             key=lambda p: (p["estimated_cost"], p["robot_id"])
         )
-        best = self.received_proposals[0]
-        winner_id = best["robot_id"]
-
-        # Verify the robot is still eligible
-        robot = robot_manager.get_robot(winner_id)
         is_emergency = self.task.priority == "CRITICAL"
-        if robot is None or robot.battery < 30 or (not is_emergency and robot.current_task is not None):
-            # Winner no longer eligible — retry next tick
-            self.received_proposals = []
+        charging = getattr(task_manager, "charging_manager", None)
+        if charging is None:
+            from backend.simulation.charging import ChargingManager
+            charging = ChargingManager()
+        # Earlier tasks may already have accepted this robot's bid this tick.
+        # Try the next valid bidder instead of repeatedly restarting the auction.
+        robot = None
+        for proposal in self.received_proposals:
+            candidate = robot_manager.get_robot(proposal["robot_id"])
+            if (candidate is None or candidate.battery < 30
+                    or (not is_emergency and candidate.current_task is not None)
+                    or candidate.status in (RobotStatus.CHARGING, RobotStatus.NEEDS_CHARGE, RobotStatus.NEGOTIATING)
+                    or candidate.orchestration_holds or candidate.hold_steps_remaining or candidate.yield_steps_remaining):
+                continue
+            previous_task = task_manager.get_task(candidate.current_task)
+            if previous_task and previous_task.priority == "CRITICAL":
+                continue
+            if charging.task_offer(candidate, self.task, pathfinder) is None:
+                continue
+            robot = candidate
+            break
+        if robot is None:
             self.status = TaskAgentStatus.WAITING
             return None
-
-        # Compute paths
-        pickup_path = pathfinder.find_path(
-            (robot.position.x, robot.position.y),
-            (self.task.pickup_x, self.task.pickup_y)
-        )
-        delivery_path = pathfinder.find_path(
-            (self.task.pickup_x, self.task.pickup_y),
-            (self.task.delivery_x, self.task.delivery_y)
-        )
-
+        winner_id = robot.id
+        pickup_path = pathfinder.find_path((robot.position.x,robot.position.y), (self.task.pickup_x,self.task.pickup_y))
+        delivery_path = pathfinder.find_path((self.task.pickup_x,self.task.pickup_y), (self.task.delivery_x,self.task.delivery_y))
         if not pickup_path or not delivery_path:
-            if not pickup_path:
-                print(
-                    f"[TASK AGENT WARNING] Task {self.task.id}: "
-                    f"no valid pickup path from "
-                    f"({robot.position.x},{robot.position.y}) to "
-                    f"({self.task.pickup_x},{self.task.pickup_y}) "
-                    f"for Robot {winner_id}. Re-issuing CFP."
-                )
-            if not delivery_path:
-                print(
-                    f"[TASK AGENT WARNING] Task {self.task.id}: "
-                    f"no valid delivery path from "
-                    f"({self.task.pickup_x},{self.task.pickup_y}) to "
-                    f"({self.task.delivery_x},{self.task.delivery_y}) "
-                    f"for Robot {winner_id}. Re-issuing CFP."
-                )
-            self.received_proposals = []
+            logger.warning("[TASK AGENT WARNING] task_id=%s invalid award route", self.task.id)
             self.status = TaskAgentStatus.WAITING
             return None
-
         # Award the contract
         old_task_id = robot.current_task
         if is_emergency and old_task_id is not None:
-            print(f"\n[🔥 EMERGENCY] Robot {winner_id} dropping Task {old_task_id} to handle Critical Task {self.task.id}.")
-            task_manager.unassign_task(old_task_id)
-            robot.carrying_item = False
+            logger.info("[CNP][EMERGENCY] robot_id=%s releasing task_id=%s for critical task_id=%s", winner_id, old_task_id, self.task.id)
+            task_manager.release_task(robot, self.message_bus, "critical_preemption")
             
         task_manager.assign_task(self.task.id, winner_id)
         robot_manager.assign_task(winner_id, self.task.id, pickup_path)
@@ -200,12 +193,12 @@ class TaskAgent:
             payload={
                 "task_id": self.task.id,
                 "robot_id": winner_id,
-                "dropped_task_id": old_task_id if is_emergency else None
+                "dropped_task_id": None
             }
         )
         self.message_bus.publish(award_msg)
 
-        print(f"Task {self.task.id} awarded to Robot {winner_id} via CNP")
+        logger.debug("[CNP] task_id=%s awarded robot_id=%s", self.task.id, winner_id)
         
         log = {
             "task_id": self.task.id,
@@ -213,13 +206,13 @@ class TaskAgent:
             "winner": winner_id
         }
 
-        try:
-            from backend.agents.negotiation import negotiation_service
-            bids_str = ", ".join([f"R{p['robot_id']}: {p['estimated_cost']:.1f}" for p in self.received_proposals])
-            negotiation_service.explain_auction_winner(self.task.id, winner_id, bids_str)
-        except Exception:
-            pass
+        if task_manager.events:
+            task_manager.events.emit("TASK_AWARDED", tag="CNP", step=task_manager.current_step,
+                                     task_id=self.task.id, robot_id=winner_id)
 
+        if task_manager.negotiation_service:
+            bids = ", ".join(f"R{p['robot_id']}: {p['estimated_cost']:.1f}" for p in self.received_proposals)
+            task_manager.negotiation_service.explain_auction_winner(self.task.id, winner_id, bids)
         return log
 
     @property

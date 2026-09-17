@@ -6,10 +6,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi.responses import JSONResponse
+from copy import deepcopy
+from functools import wraps
+from typing import Literal
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool, Field
 
 from backend.simulation.warehouse import Warehouse
 from backend.state.robot_state import RobotManager
@@ -22,7 +26,8 @@ from backend.agents.robot_orchestrator import AgentManager
 from backend.agents.message_bus import MessageBus
 from backend.agents.task_orchestrator import TaskAgentManager
 from backend.agents.negotiation import NegotiationService
-from backend.agents.orchestrator_graph import orchestrator_runner
+from backend.simulation.factory import create_simulation
+from backend.core.settings import Settings
 import logging
 
 class HealthLogFilter(logging.Filter):
@@ -64,86 +69,31 @@ class TaskCreateRequest(BaseModel):
     pickup_y: int
     delivery_x: int
     delivery_y: int
-    priority: str = "NORMAL"
+    priority: Literal["NORMAL", "CRITICAL"] = "NORMAL"
 
 
 # --- Simulation Factory ---
 
-def initialize_simulation():
-    """
-    Creates all simulation components and returns them.
-    Used at startup and by the reset endpoint.
+simulation_lock = threading.RLock()
+control_lock = threading.RLock()
+loop_stop = threading.Event()
 
-    Architecture:
-      MessageBus connects TaskAgents and RobotAgents.
-      TaskAgentManager issues CFPs and awards contracts.
-      AgentManager drives robot perceive-decide-act cycles.
-      SimulationEngine orchestrates ticks without making decisions.
-    """
 
-    warehouse = Warehouse(width=50, height=30)
-    warehouse.generate()
+def initialize_simulation(seed=None, settings=None):
+    engine = create_simulation(seed=seed, settings=settings, lock=simulation_lock)
+    return (engine.pathfinder.warehouse, engine.robot_manager, engine.task_manager,
+            engine.pathfinder, engine.collision_manager, engine.charging_manager,
+            engine.agent_manager, engine.agent_manager.message_bus, engine.task_agent_manager,
+            engine.negotiation_service, engine)
 
-    robot_manager = RobotManager()
-    robot_manager.spawn_from_warehouse(warehouse)
 
-    task_manager = TaskManager()
-
-    import random
-    def get_random_walkable():
-        while True:
-            x = random.randint(1, warehouse.width - 2)
-            y = random.randint(1, warehouse.height - 2)
-            if warehouse.grid[y][x] == ".":
-                return x, y
-
-    for _ in range(120):
-        px, py = get_random_walkable()
-        dx, dy = get_random_walkable()
-        task_manager.create_task(px, py, dx, dy)
-
-    pathfinder = AStarPathfinder(warehouse)
-
-    collision_manager = CollisionManager()
-
-    charging_manager = ChargingManager()
-
-    # --- Multi-Agent System ---
-    message_bus = MessageBus()
-
-    agent_manager = AgentManager(robot_manager, message_bus=message_bus)
-    agent_manager.create_agents()
-
-    task_agent_manager = TaskAgentManager(task_manager, message_bus)
-    task_agent_manager.create_agents_for_existing_tasks()
-
-    negotiation_service = NegotiationService()
-
-    simulation = SimulationEngine(
-        robot_manager,
-        collision_manager,
-        task_manager,
-        charging_manager,
-        pathfinder,
-        agent_manager=agent_manager,
-        task_agent_manager=task_agent_manager,
-        negotiation_service=negotiation_service,
-    )
-
-    return (
-        warehouse,
-        robot_manager,
-        task_manager,
-        pathfinder,
-        collision_manager,
-        charging_manager,
-        agent_manager,
-        message_bus,
-        task_agent_manager,
-        negotiation_service,
-        simulation
-    )
-
+def snapshot_response(function):
+    """Serialize detached data; response serialization never races with a tick."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with simulation_lock:
+            return deepcopy(function(*args, **kwargs))
+    return wrapped
 
 
 # --- Simulation Initialization ---
@@ -165,27 +115,29 @@ def initialize_simulation():
 
 # --- Thread State ---
 
-simulation_lock = threading.Lock()
 simulation_running = False
 simulation_thread = None
 
 
 # --- Background Loop ---
 
-def simulation_loop():
-    """
-    Target function for the background simulation thread.
-    Runs simulation.step() in a loop with 0.2s delay.
-    Lock is acquired only for the step, not during sleep.
-    """
+def simulation_loop(stop_event, engine):
     global simulation_running
-
-    while simulation_running:
-
+    try:
+        while not stop_event.is_set():
+            with simulation_lock:
+                if stop_event.is_set() or engine is not simulation:
+                    break
+                engine.step()
+            stop_event.wait(0.2)
+    except Exception:
+        logging.getLogger("warehouse").exception("[ERROR] Simulation worker failed run_id=%s", engine.run_id)
+        engine.events.emit("SIMULATION_FAILED", tag="ERROR", step=engine.current_step,
+                           reason="Simulation paused after an internal error")
+    finally:
         with simulation_lock:
-            simulation.step()
-
-        time.sleep(0.2)
+            if engine is simulation:
+                simulation_running = False
 
 
 # --- FastAPI App ---
@@ -225,6 +177,7 @@ def operation_centre(request: Request):
 
 
 @app.get("/warehouse/grid")
+@snapshot_response
 def get_warehouse_grid():
     """Return the warehouse grid layout."""
     return {
@@ -246,6 +199,7 @@ def root():
 
 
 @app.get("/robots")
+@snapshot_response
 def get_robots():
     return [
         {
@@ -257,6 +211,9 @@ def get_robots():
             "battery": robot.battery,
             "status": robot.status.value,
             "current_task": robot.current_task,
+            "hold_steps_remaining": robot.hold_steps_remaining,
+            "yield_to_robot_id": robot.yield_to_robot_id,
+            "orchestration_held": bool(robot.orchestration_holds),
             "path": [[p[0], p[1]] for p in robot.path] if robot.path else []
         }
         for robot in robot_manager.robots
@@ -264,6 +221,7 @@ def get_robots():
 
 
 @app.get("/tasks")
+@snapshot_response
 def get_tasks():
     return [
         {
@@ -281,14 +239,16 @@ def get_tasks():
 
 
 @app.get("/auction/logs")
+@snapshot_response
 def get_auction_logs():
     """Return the raw bids from the most recent task CNP auctions."""
-    return task_agent_manager.latest_logs
+    return list(task_agent_manager.latest_logs)
 
 @app.get("/negotiation/logs")
+@snapshot_response
 def get_negotiation_logs():
     """Return the last 5 deadlock negotiation or auction explanation logs from the local LLM."""
-    return negotiation_service.negotiation_logs[-5:]
+    return negotiation_service.recent(5)
 
 
 # ============================
@@ -313,6 +273,10 @@ def post_create_task(request: TaskCreateRequest):
     """Create a new task dynamically via API. Automatically creates a TaskAgent."""
 
     with simulation_lock:
+        if not warehouse.is_walkable(request.pickup_x, request.pickup_y) or not warehouse.is_walkable(request.delivery_x, request.delivery_y):
+            raise HTTPException(400, "Task coordinates must be inside walkable warehouse cells")
+        if not pathfinder.find_path((request.pickup_x, request.pickup_y), (request.delivery_x, request.delivery_y)):
+            raise HTTPException(400, "Task pickup and delivery must be connected")
         task_manager.create_task(
             request.pickup_x,
             request.pickup_y,
@@ -332,8 +296,13 @@ def post_create_task(request: TaskCreateRequest):
     }
 
 
+class ResetRequest(BaseModel):
+    seed: int | None = None
+    orchestrator_enabled: bool | None = None
+
+
 @app.post("/simulation/reset")
-def post_simulation_reset():
+def post_simulation_reset(request: ResetRequest | None = None):
     """Reset the entire simulation to initial state."""
 
     global warehouse
@@ -350,31 +319,23 @@ def post_simulation_reset():
     global simulation_running
     global simulation_thread
 
-    with simulation_lock:
-
-        # Stop background thread if running
-        simulation_running = False
-
-    if simulation_thread is not None:
-        simulation_thread.join(timeout=2.0)
-        simulation_thread = None
-
-    with simulation_lock:
-
-        (
-            warehouse,
-            robot_manager,
-            task_manager,
-            pathfinder,
-            collision_manager,
-            charging_manager,
-            agent_manager,
-            message_bus,
-            task_agent_manager,
-            negotiation_service,
-            simulation
-        ) = initialize_simulation()
-        orchestrator_runner.reset()
+    global loop_stop
+    with control_lock:
+        loop_stop.set()
+        with simulation_lock:
+            simulation_running = False
+            old = simulation
+            old.close()
+            selected_seed = request.seed if request and request.seed is not None else old.seed
+            settings = old.settings
+            if request and request.orchestrator_enabled is not None:
+                settings = settings.model_copy(update={"orchestrator_enabled": request.orchestrator_enabled})
+            (warehouse, robot_manager, task_manager, pathfinder, collision_manager,
+             charging_manager, agent_manager, message_bus, task_agent_manager,
+             negotiation_service, simulation) = initialize_simulation(selected_seed, settings)
+        if simulation_thread is not None:
+            simulation_thread.join(timeout=2.0)
+            simulation_thread = None
 
     return {
         "success": True,
@@ -393,24 +354,16 @@ def post_simulation_start():
     global simulation_running
     global simulation_thread
 
-    if simulation_running:
-        return {
-            "success": False,
-            "message": "Simulation already running"
-        }
-
-    simulation_running = True
-
-    simulation_thread = threading.Thread(
-        target=simulation_loop,
-        daemon=True
-    )
-    simulation_thread.start()
-
-    return {
-        "success": True,
-        "message": "Simulation started"
-    }
+    global loop_stop
+    with control_lock:
+        with simulation_lock:
+            if simulation_running:
+                raise HTTPException(409, "Simulation already running")
+            loop_stop = threading.Event()
+            simulation_running = True
+            simulation_thread = threading.Thread(target=simulation_loop, args=(loop_stop, simulation), daemon=True)
+            simulation_thread.start()
+    return {"success": True, "message": "Simulation started"}
 
 
 @app.post("/simulation/pause")
@@ -420,16 +373,14 @@ def post_simulation_pause():
     global simulation_running
     global simulation_thread
 
-    simulation_running = False
-
-    if simulation_thread is not None:
-        simulation_thread.join(timeout=2.0)
-        simulation_thread = None
-
-    return {
-        "success": True,
-        "message": "Simulation paused"
-    }
+    with control_lock:
+        loop_stop.set()
+        with simulation_lock:
+            simulation_running = False
+        if simulation_thread is not None:
+            simulation_thread.join(timeout=2.0)
+            simulation_thread = None
+    return {"success": True, "message": "Simulation paused"}
 
 
 # ============================
@@ -437,6 +388,7 @@ def post_simulation_pause():
 # ============================
 
 @app.get("/simulation/status")
+@snapshot_response
 def get_simulation_status():
     """Return comprehensive simulation status."""
 
@@ -455,6 +407,10 @@ def get_simulation_status():
     total_strikes = sum(agent.blocked_counter for agent in agent_manager.agents) if agent_manager else 0
 
     return {
+        "run_id": simulation.run_id,
+        "seed": simulation.seed,
+        "grid_revision": warehouse.revision,
+        "orchestrator_enabled": simulation.settings.orchestrator_enabled,
         "current_step": simulation.current_step,
         "active_robots": len(active_robots),
         "unfinished_tasks": len(unfinished_tasks),
@@ -472,6 +428,7 @@ def get_simulation_status():
 # ============================
 
 @app.get("/agents/status")
+@snapshot_response
 def get_agents_status():
     """Return the current goal, beliefs, memory size, and pending messages for every robot agent."""
     return {
@@ -489,11 +446,13 @@ def get_agents_status():
 
 
 @app.get("/agents/message-history")
+@snapshot_response
 def get_message_history():
     return message_bus.history()
 
 
 @app.get("/agents/messages")
+@snapshot_response
 def get_agents_messages():
     """Return pending messages for every robot agent (peek without consuming)."""
     return {
@@ -516,6 +475,7 @@ def get_agents_messages():
 
 
 @app.get("/tasks/agents")
+@snapshot_response
 def get_task_agents_status():
     """Return the status of all task agents (CNP lifecycle)."""
     return {
@@ -528,18 +488,53 @@ def get_task_agents_status():
 # ============================
 
 class OrchestratorOverrideRequest(BaseModel):
-    approved: bool
+    approved: StrictBool
     plan_id: str | None = None
 
 
 @app.get("/orchestrator/state")
+@snapshot_response
 def get_orchestrator_state():
     """Return the current LangGraph orchestrator state for frontend HUD."""
-    return orchestrator_runner.get_state()
+    return simulation.orchestrator_runner.get_state()
 
 
 @app.post("/orchestrator/override")
 def post_orchestrator_override(request: OrchestratorOverrideRequest):
     """Accept human input (Approve/Reject) and resume the paused LangGraph execution."""
-    result = orchestrator_runner.human_override(request.approved, request.plan_id)
+    with simulation_lock:
+        result = simulation.orchestrator_runner.human_override(request.approved, request.plan_id)
+    if not result["success"]:
+        raise HTTPException(409, result["message"])
     return result
+
+
+class CrisisCreateRequest(BaseModel):
+    coords: list[tuple[int, int]] | None = Field(default=None, min_length=1, max_length=10)
+
+
+@app.post("/simulation/crisis")
+def post_crisis(request: CrisisCreateRequest | None = None):
+    with simulation_lock:
+        try:
+            crisis_id = simulation.trigger_warehouse_crisis(request.coords if request else None)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        if crisis_id is None:
+            raise HTTPException(409, "No eligible cells remain for collapse")
+        return {"success": True, "crisis_id": crisis_id}
+
+
+@app.get("/orchestrator/events")
+@snapshot_response
+def get_events(event_type: str | None = None, robot_id: int | None = None,
+               crisis_id: str | None = None, limit: int = Query(default=100, ge=1, le=2000)):
+    return {"run_id": simulation.run_id, "events": simulation.events.query(
+        limit=limit, event_type=event_type, robot_id=robot_id, crisis_id=crisis_id)}
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, error: Exception):
+    logging.getLogger("warehouse").error("[ERROR] API request failed path=%s", request.url.path,
+                                        exc_info=(type(error), error, error.__traceback__))
+    return JSONResponse(status_code=500, content={"detail": "Internal server error; consult backend logs"})

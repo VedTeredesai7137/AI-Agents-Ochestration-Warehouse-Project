@@ -78,6 +78,10 @@ class MessageBus:
         if agent_id not in self._inboxes:
             self._inboxes[agent_id] = []
 
+    def unsubscribe(self, agent_id: str):
+        """Completed task agents no longer accumulate broadcast inboxes."""
+        self._inboxes.pop(agent_id, None)
+
     def publish(self, message: Message):
         """
         Deliver a message to a specific recipient's inbox.

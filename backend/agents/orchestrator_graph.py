@@ -1,610 +1,550 @@
-"""
-OrchestratorGraph — LangGraph-based deliberative crisis orchestrator.
-
-When an aisle collapse or major deadlock occurs, this graph takes control
-of the swarm to generate a multi-robot evacuation plan using the local LLM.
-
-State Machine:
-  diagnose → generate_plan → validate → [HITL interrupt if low confidence] → execute
-  If human REJECTS: validate loops back to generate_plan for a new LLM strategy.
-
-Architecture:
-  - Runs asynchronously via asyncio — does NOT block the FastAPI thread.
-  - Uses LangGraph's MemorySaver checkpointer with interrupt_before on the
-    execute node to implement Human-In-The-Loop (HITL) approval.
-  - The local Ollama/Mistral LLM generates the rerouting strategy.
-"""
-
-import asyncio
-import builtins
-import sys
+"""Per-simulation LangGraph worker, validated actions, bounded repair and FIFO crises."""
+from collections import deque
+from copy import deepcopy
+from dataclasses import dataclass, field
+from enum import Enum
 import json
-import random
-import time
 import threading
-from typing import TypedDict, Optional
+import time
+from typing import TypedDict
 
-import requests
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from backend.core.llm_config import OLLAMA_URL, get_llm_model
+from backend.agents.action_executor import ActionExecutor, ExecutionError
+from backend.agents.llm_client import OllamaClient
+from backend.agents.plans import CrisisPlan, PlanError, parse_plan, generation_schema
+from backend.agents.plan_validator import PlanValidator, WorldSnapshot
+from backend.core.events import logger
 
 
-def _log(message):
-    """Console encoding must never terminate the orchestration worker."""
-    try:
-        builtins.print(message)
-    except UnicodeEncodeError:
-        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
-        builtins.print(str(message).encode(encoding, errors="backslashreplace").decode(encoding))
+class OrchestratorState(TypedDict, total=False):
+    run_id: str
+    crisis_kind: str
+    crisis_id: str
+    plan_id: str | None
+    crisis_location: list
+    affected_robots: list
+    proposed_plan: dict | None
+    validation_score: float | None
+    validation_status: str
+    validation_issues: list
+    validation_report: dict | None
+    human_approved: bool | None
+    approval_source: str | None
+    active_node: str
+    error: str | None
+    error_code: str | None
+    regeneration_count: int
+    rejection_count: int
+    attempts: int
+    fallback_used: bool
+    fallback_reason: str | None
+    executed_actions: int
+    rejected_strategies: list
 
 
-# ---------------------------------------------------------------------------
-# State Schema
-# ---------------------------------------------------------------------------
-
-class OrchestratorState(TypedDict):
-    """State flowing through the LangGraph crisis orchestrator."""
-    crisis_location: list            # List of (x, y) coordinate tuples for collapsed cells
-    affected_robots: list            # List of robot IDs whose paths cross the crisis zone
-    proposed_plan: dict              # LLM-generated rerouting strategy
-    confidence_score: float          # Model's self-assessed confidence (0.0–1.0)
-    human_approved: Optional[bool]   # None = pending, True = approved, False = rejected
-    active_node: str                 # Current node name for frontend observability
-    error: Optional[str]             # Error message if any node fails
-    rejection_count: int             # How many times the human has rejected plans
+class CrisisKind(str, Enum):
+    DEADLOCK = "DEADLOCK"
+    STRUCTURAL_COLLAPSE = "STRUCTURAL_COLLAPSE"
 
 
-# ---------------------------------------------------------------------------
-# Node Implementations
-# ---------------------------------------------------------------------------
-
-def diagnose(state: OrchestratorState) -> dict:
-    """
-    Identify which robots are trapped or affected by the crisis.
-    
-    Reads the crisis_location from state and cross-references against
-    the robot paths stored in the orchestrator context. Robots whose
-    current path contains any collapsed cell are considered affected.
-    """
-    affected = state.get("affected_robots", [])
-    crisis = state.get("crisis_location", [])
-    
-    _log(f"\n[🧠 GRAPH] Executing Node: DIAGNOSE | State: crisis={crisis}, affected_count={len(affected)}")
-    _log(f"[🧠 GRAPH] diagnose: {len(affected)} robots affected: {affected}")
-    _log(f"[🧠 GRAPH] Transitioning to next node...")
-    
-    return {
-        "active_node": "diagnose",
-        "affected_robots": affected,
-    }
+@dataclass
+class CrisisRequest:
+    crisis_id: str
+    coords: list
+    affected: list
+    step: int
+    kind: CrisisKind = CrisisKind.STRUCTURAL_COLLAPSE
+    pair: tuple[int, int] | None = None
+    episode_id: int | None = None
 
 
-def generate_plan(state: OrchestratorState) -> dict:
-    """
-    Use the local Ollama LLM to propose a rerouting strategy for affected robots.
-    
-    Sends a structured prompt to Mistral describing the crisis location,
-    the affected robot IDs, and requests a JSON rerouting plan.
-    Returns a mocked confidence_score between 0.70 and 0.95.
-    """
-    crisis = state["crisis_location"]
-    affected = state["affected_robots"]
-    rejection_count = state.get("rejection_count", 0)
-    
-    _log(f"\n[🧠 GRAPH] Executing Node: GENERATE_PLAN | State: affected={affected}, rejections={rejection_count}")
-    
-    # If this is a re-generation after rejection, tell the LLM to try a different approach
-    rejection_context = ""
-    if rejection_count > 0:
-        rejection_context = (
-            f" The previous plan was REJECTED by the human operator ({rejection_count} time(s)). "
-            "You MUST propose a DIFFERENT strategy than before. Consider alternative routes, "
-            "different robot priorities, or fallback to charging stations."
-        )
-    
-    prompt = (
-        f"A warehouse aisle has collapsed at cells {crisis}. "
-        f"The following robots are affected and need rerouting: {affected}. "
-        f"{rejection_context}"
-        "Generate a JSON rerouting strategy. The output must be a JSON object with exactly one field: "
-        "'routes' which is a list of objects, each with 'robot_id' (int) and 'action' (string describing "
-        "what the robot should do: e.g., 'reroute_around_north', 'retreat_to_charger', 'hold_position')."
-    )
-    
-    payload = {
-        "model": get_llm_model(),
-        "prompt": prompt,
-        "format": "json",
-        "stream": False,
-    }
-    
-    proposed_plan = {"routes": []}
-    
-    try:
-        _log(f"[🧠 GRAPH] generate_plan: Sending prompt to Ollama (attempt #{rejection_count + 1})...")
-        response = requests.post(
-            OLLAMA_URL,
-            json=payload,
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        raw = data.get("response", "{}")
-        result = json.loads(raw)
-        proposed_plan = result
-        _log(f"[🧠 GRAPH] generate_plan: LLM plan received: {proposed_plan}")
-    except requests.exceptions.Timeout:
-        _log("[🧠 GRAPH] generate_plan: LLM timeout (60s). Using fallback plan.")
-        proposed_plan = {
-            "routes": [
-                {"robot_id": rid, "action": "hold_position_and_recompute_path"}
-                for rid in affected
-            ],
-            "fallback": True,
-        }
-    except Exception as e:
-        _log(f"[🧠 GRAPH] generate_plan: LLM error: {e}. Using fallback plan.")
-        proposed_plan = {
-            "routes": [
-                {"robot_id": rid, "action": "hold_position_and_recompute_path"}
-                for rid in affected
-            ],
-            "fallback": True,
-            "error": str(e),
-        }
-    
-    # Confidence score — random between 0.70 and 0.95 as specified
-    confidence = round(random.uniform(0.70, 0.95), 2)
-    _log(f"[🧠 GRAPH] generate_plan: Confidence score = {confidence}")
-    _log(f"[🧠 GRAPH] Transitioning to next node...")
-    
-    return {
-        "active_node": "generate_plan",
-        "proposed_plan": proposed_plan,
-        "confidence_score": confidence,
-        "human_approved": None,  # Reset approval for new plan
-    }
+@dataclass
+class Session:
+    request: CrisisRequest
+    state: dict
+    graph: object = None
+    config: dict = field(default_factory=dict)
+    expected_ownership: dict = field(default_factory=dict)
+    waiting: bool = False
+    started: float = field(default_factory=time.monotonic)
+    timer: object = None
 
 
-def validate(state: OrchestratorState) -> dict:
-    """
-    Evaluate the proposed plan's confidence score.
-    
-    If confidence_score < 0.85, the plan is flagged as requiring human
-    approval. The graph will be interrupted before the execute node
-    (via LangGraph's interrupt_before mechanism), pausing execution
-    until a human operator approves or rejects.
-    """
-    confidence = state.get("confidence_score", 0.0)
-    human_approved = state.get("human_approved")
-    rejection_count = state.get("rejection_count", 0)
-    
-    _log(f"\n[🧠 GRAPH] Executing Node: VALIDATE | State: confidence={confidence}, human_approved={human_approved}, rejections={rejection_count}")
-    
-    if confidence < 0.85:
-        _log(f"[🧠 GRAPH] validate: LOW CONFIDENCE ({confidence}). Requesting human approval.")
-        _log(f"[🧠 GRAPH] Transitioning to next node...")
-        return {
-            "active_node": "validate",
-            "human_approved": None,  # Pending — graph will interrupt before execute
-        }
-    else:
-        _log(f"[🧠 GRAPH] validate: HIGH CONFIDENCE ({confidence}). Auto-approving plan.")
-        _log(f"[🧠 GRAPH] Transitioning to next node...")
-        return {
-            "active_node": "validate",
-            "human_approved": True,
-        }
-
-
-def execute(state: OrchestratorState) -> dict:
-    """
-    Apply the approved rerouting plan to affected robots.
-    
-    This node runs only after human approval (if required).
-    It stores the execution result in state. The actual path
-    modification on Robot objects is performed by the engine
-    after the graph completes, using the plan from state.
-    
-    Also pushes a log entry to NegotiationService for the
-    /negotiation/logs endpoint.
-    """
-    approved = state.get("human_approved")
-    plan = state.get("proposed_plan", {})
-    affected = state.get("affected_robots", [])
-    confidence = state.get("confidence_score", 0.0)
-    rejection_count = state.get("rejection_count", 0)
-    
-    _log(f"\n[🧠 GRAPH] Executing Node: EXECUTE | State: approved={approved}, affected={len(affected)}, confidence={confidence}, rejections={rejection_count}")
-    
-    if approved is False:
-        # This path should not normally be reached because the conditional
-        # edge routes rejections back to generate_plan. But as a safety net:
-        _log("[🧠 GRAPH] execute: Plan REJECTED by operator. This should have looped back.")
-        return {
-            "active_node": "execute",
-            "proposed_plan": {**plan, "executed": False, "rejected": True},
-        }
-    
-    _log(f"[🧠 GRAPH] execute: Applying rerouting plan to {len(affected)} robots.")
-    
-    # Mark plan as executed — the engine will read this and recompute paths
-    executed_plan = {
-        **plan,
-        "executed": True,
-        "execution_time": time.time(),
-    }
-    
-    # Push log entry to NegotiationService (will be picked up by _apply_plan in the runner)
-    conf_pct = round(confidence * 100)
-    _push_negotiation_log(
-        event=f"Orchestrator Crisis Resolution",
-        reasoning=f"Executed Reroute Plan. Confidence: {conf_pct}%. Affected: {affected}. Rejections: {rejection_count}.",
-        decision=f"Plan executed for {len(affected)} robots",
-    )
-    
-    _log(f"[🧠 GRAPH] execute: Plan execution complete. Log pushed to negotiation logs.")
-    _log(f"[🧠 GRAPH] Graph execution FINISHED.")
-    
-    return {
-        "active_node": "execute",
-        "proposed_plan": executed_plan,
-    }
-
-
-def _push_negotiation_log(event: str, reasoning: str, decision: str):
-    """
-    Push a log entry into the NegotiationService's negotiation_logs list
-    so it appears in GET /negotiation/logs.
-    
-    Uses a lazy import to avoid circular dependencies.
-    """
-    try:
-        from backend.agents.negotiation import NegotiationService
-        # Access the module-level singleton instance
-        import backend.agents.negotiation as neg_module
-        service = neg_module.negotiation_service
-        
-        log_entry = {
-            "robot1": "Orchestrator",
-            "robot2": "Swarm",
-            "cell": (0, 0),
-            "winner": "N/A",
-            "reason": reasoning,
-            "event": event,
-            "timestamp": time.time(),
-            "reasoning": reasoning,
-            "decision": decision,
-        }
-        service.negotiation_logs.append(log_entry)
-        _log(f"[🧠 GRAPH] Negotiation log pushed: {event}")
-    except Exception as e:
-        _log(f"[🧠 GRAPH] WARNING: Failed to push negotiation log: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Conditional Edge: Route from validate
-# ---------------------------------------------------------------------------
-
-def should_execute_or_regenerate(state: OrchestratorState) -> str:
-    """
-    Conditional edge from validate node.
-    
-    Routes:
-      - If human_approved is True  → proceed to 'execute'
-      - If human_approved is None  → proceed to 'execute' (interrupt_before pauses it)
-      - If human_approved is False → loop back to 'generate_plan' for a new LLM strategy
-    """
-    human_approved = state.get("human_approved")
-    
-    if human_approved is False:
-        _log(f"\n[🧠 GRAPH] Human rejected plan. Looping back to GENERATE_PLAN node.")
+def should_execute_or_regenerate(state):
+    # Explicit rejection feedback edge is retained, including at the checkpoint.
+    if state.get("human_approved") is False:
         return "generate_plan"
-    
-    # For True or None, proceed to execute (interrupt_before handles HITL pause)
+    if state.get("validation_status") != "VALID":
+        return "generate_plan"  # The graph edge applies the configured retry budget.
     return "execute"
 
 
-# ---------------------------------------------------------------------------
-# Graph Compilation
-# ---------------------------------------------------------------------------
-
-# Checkpointer for HITL interrupt support
-checkpointer = MemorySaver()
-
-# Build the StateGraph
-builder = StateGraph(OrchestratorState)
-
-# Add nodes
-builder.add_node("diagnose", diagnose)
-builder.add_node("generate_plan", generate_plan)
-builder.add_node("validate", validate)
-builder.add_node("execute", execute)
-
-# Set entry point
-builder.set_entry_point("diagnose")
-
-# Linear edges: diagnose → generate_plan → validate
-builder.add_edge("diagnose", "generate_plan")
-builder.add_edge("generate_plan", "validate")
-
-# Conditional edge from validate: execute OR loop back to generate_plan
-builder.add_conditional_edges(
-    "validate",
-    should_execute_or_regenerate,
-    {"execute": "execute", "generate_plan": "generate_plan"},
-)
-
-# execute → END
-builder.add_edge("execute", END)
-
-# Compile with checkpointer and interrupt_before on execute for HITL
-orchestrator_graph = builder.compile(
-    checkpointer=checkpointer,
-    interrupt_before=["execute"],
-)
-
-
-# ---------------------------------------------------------------------------
-# Async Runner — Invokes the graph without blocking the simulation thread
-# ---------------------------------------------------------------------------
-
 class OrchestratorRunner:
-    """
-    Manages the lifecycle of a single orchestrator graph invocation.
-    
-    Provides:
-      - Async graph invocation in a background thread
-      - State introspection for the frontend API
-      - Human override (approve/reject) to resume paused execution
-      - Rejection feedback loop: reject → generate_plan → validate → ...
-    """
-    
-    def __init__(self):
-        self._thread_id = None         # LangGraph thread ID for checkpointer
-        self._config = None            # Graph config dict
-        self._current_state = None     # Latest graph state snapshot
-        self._is_active = False        # Whether the orchestrator is running
-        self._is_waiting_human = False # Whether paused at HITL interrupt
-        self._lock = threading.Lock()
-        self._loop = None              # Dedicated asyncio event loop
-        self._thread = None            # Background thread for the loop
-        self._invocation_count = 0     # Unique ID per invocation
-        self._negotiation_service = None  # Reference for log pushing
-    
-    @property
-    def is_active(self) -> bool:
-        with self._lock:
-            return self._is_active
-    
-    @property
-    def is_waiting_human(self) -> bool:
-        with self._lock:
-            return self._is_waiting_human
-    
-    def reset(self):
-        """Invalidate workers from the previous simulation without blocking on inference."""
-        with self._lock:
-            self._config = None
-            self._current_state = None
-            self._is_active = False
-            self._is_waiting_human = False
+    def __init__(self, engine, client=None):
+        self.engine = engine
+        self.client = client or OllamaClient()
+        self.executor = ActionExecutor(engine)
+        self.validator = PlanValidator(engine.settings)
+        self._lock = threading.RLock()
+        self._queue = deque()
+        self._current = None
+        self._last_state = {}
+        self._sequence = 0
 
-    def get_state(self) -> dict:
-        """Return the current orchestrator state for API consumption."""
+    @property
+    def is_active(self):
         with self._lock:
-            if not self._is_active and self._current_state is None:
-                return {
-                    "active": False,
-                    "active_node": None,
-                    "crisis_location": None,
-                    "affected_robots": [],
-                    "proposed_plan": None,
-                    "confidence_score": None,
-                    "human_approved": None,
-                    "waiting_for_human": False,
-                    "error": None,
-                    "rejection_count": 0,
-                }
-            
-            st = self._current_state or {}
-            return {
-                "active": self._is_active,
-                "plan_id": f"{self._thread_id}:{st.get('rejection_count', 0)}",
-                "active_node": st.get("active_node"),
-                "crisis_location": st.get("crisis_location"),
-                "affected_robots": st.get("affected_robots", []),
-                "proposed_plan": st.get("proposed_plan"),
-                "confidence_score": st.get("confidence_score"),
-                "human_approved": st.get("human_approved"),
-                "waiting_for_human": self._is_waiting_human,
-                "error": st.get("error"),
-                "rejection_count": st.get("rejection_count", 0),
-            }
-    
-    def invoke_async(self, crisis_coords: list, affected_robot_ids: list, pathfinder=None, robot_manager=None):
-        """
-        Launch the orchestrator graph in a background thread.
-        
-        Parameters
-        ----------
-        crisis_coords : list of (x, y) tuples
-        affected_robot_ids : list of int
-        pathfinder : AStarPathfinder (stored for execute-phase path recomputation)
-        robot_manager : RobotManager (stored for execute-phase robot mutation)
-        """
+            return self._current is not None
+
+    @property
+    def is_waiting_human(self):
         with self._lock:
-            if self._is_active:
-                _log("[🧠 GRAPH] Already active, skipping duplicate invocation.")
-                return
-            
-            self._invocation_count += 1
-            self._thread_id = f"crisis-{self._invocation_count}"
-            self._config = {"configurable": {"thread_id": self._thread_id}}
-            self._is_active = True
-            self._is_waiting_human = False
-            self._current_state = {
-                "crisis_location": crisis_coords,
-                "affected_robots": affected_robot_ids,
-                "active_node": "starting",
-                "rejection_count": 0,
-            }
-        
-            # Capture invocation identity and dependencies under the same lock.
-            self._pathfinder = pathfinder
-            self._robot_manager = robot_manager
-            config = self._config
-        
-        initial_state: OrchestratorState = {
-            "crisis_location": crisis_coords,
-            "affected_robots": affected_robot_ids,
-            "proposed_plan": {},
-            "confidence_score": 0.0,
-            "human_approved": None,
-            "active_node": "starting",
-            "error": None,
-            "rejection_count": 0,
-        }
-        
-        def run_graph():
-            try:
-                _log(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR INVOKED (thread_id={self._thread_id}) ======")
-                _log(f"[🧠 GRAPH] Crisis coords: {crisis_coords}")
-                _log(f"[🧠 GRAPH] Affected robots: {affected_robot_ids}")
-                
-                # Invoke graph — will pause at interrupt_before=["execute"]
-                result = orchestrator_graph.invoke(initial_state, config)
-                
-                self._handle_graph_result(result, config)
-                
-            except Exception as e:
-                _log(f"[🧠 GRAPH] Graph invocation error: {e}")
-                with self._lock:
-                    if config != self._config:
-                        return
-                    self._current_state = self._current_state or {}
-                    self._current_state["error"] = str(e)
-                    self._current_state["active_node"] = "error"
-                    self._is_active = False
-                    self._is_waiting_human = False
-        
-        thread = threading.Thread(target=run_graph, daemon=True)
-        thread.start()
-    
-    def _handle_graph_result(self, result, config):
-        """Process the result of a graph invocation or resume."""
+            return bool(self._current and self._current.waiting)
+
+    def get_state(self):
         with self._lock:
-            if config != self._config:
-                return
-            self._current_state = dict(result)
-            
-            # Check if we're at the interrupt (paused before execute)
-            snapshot = orchestrator_graph.get_state(self._config)
-            if snapshot.next:
-                # Graph is paused — check if human approval is needed
-                human_approved = self._current_state.get("human_approved")
-                if human_approved is None:
-                    self._is_waiting_human = True
-                    self._current_state["active_node"] = "waiting_for_human"
-                    _log(f"\n[🧠 GRAPH] ⏸️  Graph PAUSED at HITL interrupt — waiting for human approval.")
-                    _log(f"[🧠 GRAPH] Confidence: {self._current_state.get('confidence_score')} | Rejections: {self._current_state.get('rejection_count', 0)}")
-                else:
-                    # Auto-approved but still at interrupt, resume immediately
-                    self._is_waiting_human = False
-                    _log(f"[🧠 GRAPH] Auto-approved (confidence >= 0.85). Resuming to execute node...")
-                    self._resume_graph()
+            session = self._current
+            state = deepcopy(session.state if session else self._last_state)
+            return {"run_id": self.engine.run_id, "active": session is not None,
+                    "active_node": None, "crisis_id": None, "crisis_kind": None, "plan_id": None,
+                    "crisis_location": [], "affected_robots": [], "proposed_plan": None,
+                    "validation_score": None, "validation_status": "PENDING", "validation_issues": [],
+                    "human_approved": None, "regeneration_count": 0, "rejection_count": 0,
+                    "fallback_used": False, "fallback_reason": None, "error": None,
+                    **state, "waiting_for_human": bool(session and session.waiting),
+                    "queued_crises": len(self._queue),
+                    "max_pending_crisis": self.engine.settings.max_pending_crisis,
+                    "queued_crisis_ids": [r.crisis_id for r in self._queue],
+                    "auto_execute_threshold": self.engine.settings.auto_execute_threshold}
+
+    def scheduling_state(self):
+        """Small state read for engine backpressure/health; no copied plan payload."""
+        with self._lock:
+            requests = ([self._current.request] if self._current else []) + list(self._queue)
+            return dict(active=self._current is not None,
+                        active_crisis_id=self._current.request.crisis_id if self._current else None,
+                        queued_crises=len(self._queue),
+                        structural_pending=any(r.kind == CrisisKind.STRUCTURAL_COLLAPSE for r in requests),
+                        queue_full=len(self._queue) >= self.engine.settings.max_pending_crisis)
+
+    def _is_stale(self, request):
+        return (request.kind == CrisisKind.DEADLOCK and
+                not self.engine.deadlock_is_current(request.pair, request.episode_id))
+
+    def _prune_stale_locked(self):
+        pending = deque()
+        for request in self._queue:
+            if self._is_stale(request):
+                self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE",
+                            reason="DEADLOCK_ALREADY_RESOLVED")
             else:
-                # Graph completed without interrupt
-                self._is_active = False
-                self._apply_plan()
-                _log(f"\n[🧠 GRAPH] ====== CRISIS ORCHESTRATOR COMPLETED ======")
-    
-    def _resume_graph(self):
-        """Resume graph execution after the interrupt (internal, called with lock held)."""
-        config = self._config
+                pending.append(request)
+        self._queue = pending
 
-        def do_resume():
-            try:
-                _log(f"\n[🧠 GRAPH] Resuming graph execution after interrupt...")
-                result = orchestrator_graph.invoke(None, config)
-                
-                self._handle_graph_result(result, config)
-            except Exception as e:
-                _log(f"[🧠 GRAPH] Resume error: {e}")
-                with self._lock:
-                    if config != self._config:
-                        return
-                    self._current_state = self._current_state or {}
-                    self._current_state["error"] = str(e)
-                    self._current_state["active_node"] = "error"
-                    self._is_active = False
-                    self._is_waiting_human = False
-        
-        threading.Thread(target=do_resume, daemon=True).start()
-    
-    def human_override(self, approved: bool, plan_id=None) -> dict:
-        """Atomically accept one decision for the pending checkpoint."""
-        with self._lock:
-            if not self._is_waiting_human:
-                return {"success": False, "message": "Orchestrator is not waiting for human input."}
-            expected = f"{self._thread_id}:{self._current_state.get('rejection_count', 0)}"
-            if plan_id is not None and plan_id != expected:
-                return {"success": False, "message": "This plan has changed. Review the current plan."}
-            updates = {"human_approved": approved,
-                       "active_node": "executing" if approved else "regenerating"}
-            if not approved:
-                updates["rejection_count"] = self._current_state.get("rejection_count", 0) + 1
-            try:
-                # Re-evaluate validate's conditional edge, including rejection -> generate_plan.
-                orchestrator_graph.update_state(self._config, updates, as_node="validate")
-            except Exception as error:
-                self._current_state["error"] = str(error)
-                return {"success": False, "message": f"Could not record decision: {error}"}
-            self._current_state.update(updates)
-            self._is_waiting_human = False
-            self._resume_graph()
-        return {"success": True, "message": "Decision accepted. Graph resuming."}
-
-    def _apply_plan(self):
-        """
-        After graph completes, apply the rerouting plan to affected robots.
-        Recomputes A* paths for each affected robot.
-        """
-        if not self._current_state:
-            return
-        
-        plan = self._current_state.get("proposed_plan", {})
-        if not plan.get("executed"):
-            _log("[🧠 GRAPH] Plan was not executed (rejected or error). No paths modified.")
-            return
-        
-        affected = self._current_state.get("affected_robots", [])
-        if not self._pathfinder or not self._robot_manager:
-            _log("[🧠 GRAPH] Missing pathfinder/robot_manager reference. Cannot recompute paths.")
-            return
-        
-        _log(f"[🧠 GRAPH] Applying plan: Recomputing paths for {len(affected)} robots.")
-        for rid in affected:
-            robot = self._robot_manager.get_robot(rid)
-            if robot and robot.path and len(robot.path) > 1:
-                # Recompute path from current position to original destination
-                dest = robot.path[-1]
-                new_path = self._pathfinder.find_path(
-                    (robot.position.x, robot.position.y),
-                    dest,
-                )
-                if new_path:
-                    robot.path = new_path
-                    _log(f"[🧠 GRAPH] Robot {rid}: Path recomputed ({len(new_path)} steps)")
+    def invoke_async(self, crisis_coords, affected_robot_ids, kind=CrisisKind.STRUCTURAL_COLLAPSE,
+                     episode_id=None):
+        # All queue admission/activation uses simulation -> runner lock order.
+        # Queued requests are metadata only: they NEVER pin robots.
+        kind = {"deadlock": CrisisKind.DEADLOCK, "aisle_collapse": CrisisKind.STRUCTURAL_COLLAPSE}.get(kind, kind)
+        kind = CrisisKind(kind)
+        with self.engine.lock:
+            if self.engine.closed:
+                return None
+            with self._lock:
+                affected = sorted(set(affected_robot_ids))
+                pair = tuple(affected) if kind == CrisisKind.DEADLOCK and len(affected) == 2 else None
+                if kind == CrisisKind.DEADLOCK and pair is None:
+                    raise ValueError("Deadlock crises require two distinct robot IDs")
+                self._prune_stale_locked()
+                requests = ([self._current.request] if self._current else []) + list(self._queue)
+                existing = next((r for r in requests if pair is not None and r.pair == pair), None)
+                if existing:
+                    self._event("DEDUPED", existing, tag="CRISIS_QUEUE", pair=pair,
+                                existing_crisis_id=existing.crisis_id)
+                    return existing.crisis_id
+                self._sequence += 1
+                request = CrisisRequest(f"{self.engine.run_id}:crisis_{self._sequence:04d}",
+                                        sorted(set(map(tuple, crisis_coords))), affected,
+                                        self.engine.current_step, kind, pair, episode_id)
+                if self._is_stale(request):
+                    self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE",
+                                reason="DEADLOCK_ALREADY_RESOLVED")
+                    return None
+                if self._current:
+                    if len(self._queue) >= self.engine.settings.max_pending_crisis:
+                        self._event("BACKPRESSURE", request, tag="CRISIS_QUEUE",
+                                    depth=len(self._queue), limit=self.engine.settings.max_pending_crisis)
+                        return None
+                    self._queue.append(request)
+                    self._event("CRISIS_QUEUED", request, tag="CRISIS_QUEUE", depth=len(self._queue))
                 else:
-                    _log(f"[🧠 GRAPH] Robot {rid}: No valid path found, clearing path.")
+                    self._start_locked(request)
+                return request.crisis_id
+
+    def _start_locked(self, request):
+        # Revalidate at the head, under the same lock that installs active holds.
+        if self._is_stale(request):
+            self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE", reason="DEADLOCK_ALREADY_RESOLVED")
+            return False
+        state = dict(run_id=self.engine.run_id, crisis_id=request.crisis_id, crisis_kind=request.kind.value,
+                     plan_id=None, crisis_location=request.coords, affected_robots=request.affected,
+                     proposed_plan=None, validation_score=None, validation_status="PENDING",
+                     validation_issues=[], human_approved=None, active_node="starting", error=None,
+                     error_code=None, attempts=0, regeneration_count=0, rejection_count=0,
+                     fallback_used=False, fallback_reason=None, executed_actions=0, rejected_strategies=[])
+        session = Session(request=request, state=state)
+        session.config = {"configurable": {"thread_id": request.crisis_id}, "recursion_limit": 100}
+        self._current = session
+        try:
+            session.graph = self._build_graph(session)
+            for rid in request.affected:
+                robot = self.engine.robot_manager.get_robot(rid)
+                if robot:
+                    robot.orchestration_holds.add(request.crisis_id)
+            self._event("ORCH_START", request, affected=request.affected, crisis_kind=request.kind.value)
+            self._spawn(session, state)
+        except Exception:
+            logger.exception("[ERROR] Orchestrator startup failed crisis_id=%s", request.crisis_id)
+            session.state.update(fallback_used=True, fallback_reason="ORCHESTRATOR_START_FAILED")
+            try:
+                self.executor.fallback(request.affected, "ORCHESTRATOR_START_FAILED", crisis_id=request.crisis_id)
+            except Exception:
+                logger.exception("[ERROR] Startup fallback failed crisis_id=%s", request.crisis_id)
+                self._emergency_hold(session)
+            finally:
+                self._finish(session)
+        return True
+
+    def _spawn(self, session, initial=None):
+        threading.Thread(target=self._drive, args=(session, initial), daemon=True,
+                         name=f"orchestrator-{session.request.crisis_id}").start()
+
+    def _event(self, event, request, tag="ORCH", **context):
+        return self.engine.events.emit(event, tag=tag, step=self.engine.current_step,
+                                       crisis_id=request.crisis_id, **context)
+
+    def _publish(self, session, **updates):
+        with self._lock:
+            if self._current is session:
+                session.state.update(deepcopy(updates))
+
+    def _snapshot(self, session):
+        with self.engine.lock:
+            with self._lock:
+                if self.engine.closed or self._current is not session:
+                    raise ExecutionError("RUN_CANCELLED", "Simulation or crisis session was reset")
+            return WorldSnapshot.capture(self.engine)
+
+    def _plan_prompt(self, request, world, state):
+        robots = []
+        for rid in request.affected:
+            r = world.robots.get(rid)
+            if r is None:
+                continue
+            task = world.tasks.get(r.current_task)
+            robots.append(dict(robot_id=rid, position=[r.position.x,r.position.y], battery=r.battery,
+                carrying=r.carrying_item, task_id=r.current_task, destination=world.destination(r),
+                delivery=[task.delivery_x,task.delivery_y] if task else None,
+                next_cells=r.path[1:4],
+                adjacent_walkable=world.warehouse.get_neighbors(r.position.x,r.position.y)))
+        feedback = [{"robot_id":i.get("robot_id"),"code":i["code"]} for i in state.get("validation_issues",[])][:12]
+        context = dict(kind=request.kind.value,crisis_cells=request.coords,robots=robots,
+                       feedback=feedback or {"code":state.get("error_code"),"message":(state.get("error") or "")[:200]},
+                       rejected_strategies=state.get("rejected_strategies",[]))
+        return ("Warehouse emergency. Return JSON only: {\"actions\":[{\"robot_id\":1,\"action\":\"HOLD\","
+                "\"hold_steps\":2,\"reason\":\"brief reason\"}],\"rationale\":\"brief\"}. "
+                "Exactly one action per affected robot below. Allowed actions and ONLY their parameters: "
+                f"HOLD hold_steps=1..{self.engine.settings.max_hold_steps}; YIELD yield_to_robot_id; "
+                "REROUTE waypoint={x:int,y:int}; REASSIGN_TASK task_id (must own it); GO_TO_CHARGER no parameter. "
+                "Every action needs robot_id and reason. Coordinates are x,y. Never enter crisis cells. "
+                "A reroute must still reach destination with enough battery. YIELD stays stationary; "
+                "do not block the winner. Use short HOLD when a safe detour is unknown. "
+                "Do not repeat a rejected strategy. " + json.dumps(context,separators=(",",":")))
+
+    def _build_graph(self, session):
+        request = session.request
+
+        def diagnose(state):
+            self._publish(session, active_node="diagnose")
+            self._event("DIAGNOSE", request, graph_node="diagnose", affected=request.affected)
+            return {"active_node": "diagnose"}
+
+        def generate(state):
+            attempts = state.get("attempts", 0)
+            if attempts >= 1 + self.engine.settings.max_regenerations:
+                return {"error_code": state.get("error_code") or "MAX_REGENERATIONS",
+                        "active_node": "regenerating", "validation_status": "INVALID", "proposed_plan": None}
+            if attempts:
+                self._event("PLAN_REGENERATED", request, reason=state.get("error_code") or "HUMAN_REJECTED",
+                            attempt=attempts, maximum=self.engine.settings.max_regenerations)
+            plan_id = f"{request.crisis_id}:plan_{attempts + 1:03d}"
+            updates = {"attempts": attempts + 1, "regeneration_count": attempts,
+                       "plan_id": plan_id, "proposed_plan": None, "human_approved": None, "approval_source": None,
+                       "validation_status": "PENDING", "validation_score": None, "validation_issues": [],
+                       "error": None, "error_code": None, "active_node": "generate_plan"}
+            self._publish(session, **updates)
+            with self.engine.lock:
+                world = self._snapshot(session)
+                if (request.kind == CrisisKind.DEADLOCK and not self.engine.deadlock_is_current(
+                        request.pair, request.episode_id, active_crisis=request.crisis_id)):
+                    self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE", reason="DEADLOCK_ALREADY_RESOLVED")
+                    return {**updates, "error_code": "STALE_CRISIS", "error": "Deadlock already resolved"}
+            session.expected_ownership = world.ownership_key(request.affected)
+            prompt = self._plan_prompt(request, world, state)
+            started = time.monotonic()
+            self._event("LLM_REQUEST", request, tag="LLM", plan_id=plan_id, model=self.client.model,
+                        attempt=attempts + 1, graph_node="generate_plan", prompt_chars=len(prompt))
+            try:
+                raw = self.client.generate(prompt, generation_schema())
+                plan = parse_plan(raw)
+                session.expected_ownership = world.ownership_key([a.robot_id for a in plan.actions])
+                self._event("LLM_SUCCESS", request, tag="LLM", plan_id=plan_id, model=self.client.model,
+                            latency_ms=round((time.monotonic()-started)*1000, 2), actions=len(plan.actions))
+                if plan.strategy_key() in state.get("rejected_strategies", []):
+                    self._event("INVALID_PLAN", request, tag="VALIDATOR", plan_id=plan_id, codes=["REJECTED_STRATEGY"])
+                    updates.update(error_code="REJECTED_STRATEGY", error="Model repeated a rejected strategy",
+                                   validation_status="INVALID")
+                else:
+                    updates["proposed_plan"] = plan.model_dump(mode="json")
+                    self._event("PLAN_PARSED", request, tag="PLAN", plan_id=plan_id, actions=len(plan.actions))
+            except PlanError as error:
+                updates.update(error_code=error.code, error=str(error), validation_status="INVALID")
+                if error.code in ("LLM_INVALID_JSON", "LLM_SCHEMA_ERROR"):
+                    self._event("INVALID_PLAN", request, tag="VALIDATOR", plan_id=plan_id,
+                                codes=[error.code], reason=str(error))
+                self._event("LLM_FAILURE", request, tag="LLM", plan_id=plan_id, model=self.client.model,
+                            error_code=error.code, reason=str(error),
+                            latency_ms=round((time.monotonic()-started)*1000, 2))
+            except Exception:
+                logger.exception("[LLM][ERROR] Unexpected inference failure crisis_id=%s", request.crisis_id)
+                updates.update(error_code="LLM_INTERNAL_ERROR", error="Unexpected inference failure", validation_status="INVALID")
+                self._event("LLM_FAILURE", request, tag="LLM", plan_id=plan_id, model=self.client.model,
+                            error_code="LLM_INTERNAL_ERROR", latency_ms=round((time.monotonic()-started)*1000, 2))
+            self._publish(session, **updates)
+            return updates
+
+        def after_generate(state):
+            if state.get("error_code") == "STALE_CRISIS":
+                return END
+            if state.get("proposed_plan"):
+                return "validate"
+            if state.get("error_code") in ("LLM_TIMEOUT", "LLM_UNAVAILABLE", "LLM_INTERNAL_ERROR"):
+                return "fallback"
+            if state.get("attempts", 0) >= 1 + self.engine.settings.max_regenerations:
+                return "fallback"
+            return "generate_plan"
+
+        def validate(state):
+            self._publish(session, active_node="validate")
+            plan = CrisisPlan.model_validate(state["proposed_plan"])
+            report = self.validator.validate(plan, self._snapshot(session), request.coords, request.affected)
+            auto = (report.valid and not report.requires_human and
+                    report.validation_score >= self.engine.settings.auto_execute_threshold)
+            updates = dict(active_node="validate", validation_status="VALID" if report.valid else "INVALID",
+                           validation_score=report.validation_score, validation_issues=[i.model_dump() for i in report.issues],
+                           validation_report=report.model_dump(mode="json"), human_approved=True if auto else None,
+                           approval_source="policy" if auto else None,
+                           error_code=None if report.valid else "PLAN_VALIDATION_FAILED")
+            self._event("VALIDATOR_PASS" if report.valid else "INVALID_PLAN", request, tag="VALIDATOR",
+                        plan_id=state["plan_id"], validation_score=report.validation_score,
+                        errors=report.metrics["errors"], warnings=report.metrics["warnings"],
+                        codes=[i.code for i in report.issues], graph_node="validate")
+            self._publish(session, **updates)
+            return updates
+
+        def after_validate(state):
+            if state.get("human_approved") is False:
+                return "generate_plan"
+            if state.get("validation_status") != "VALID":
+                return "fallback" if state["attempts"] >= 1 + self.engine.settings.max_regenerations else "generate_plan"
+            return should_execute_or_regenerate(state)
+
+        def execute(state):
+            self._publish(session, active_node="execute")
+            try:
+                plan = CrisisPlan.model_validate(state["proposed_plan"])
+                with self.engine.lock:
+                    self._snapshot(session)
+                    self.executor.execute(plan, request.coords, request.affected,
+                                          human_approved=state.get("approval_source") == "human" and state.get("human_approved") is True,
+                                          expected_ownership=session.expected_ownership,
+                                          expected_issues=state.get("validation_issues"),
+                                          crisis_id=request.crisis_id, plan_id=state["plan_id"])
+                return {"active_node": "execute", "executed_actions": len(plan.actions)}
+            except ExecutionError as error:
+                self._event("ACTION_FAILED", request, tag="EXECUTOR", plan_id=state["plan_id"], error_code=error.code,
+                            reason=str(error))
+                return {"error_code": error.code, "error": str(error), "executed_actions": 0}
+
+        def fallback(state):
+            reason = state.get("error_code") or "MAX_REGENERATIONS"
+            self._publish(session, active_node="fallback", fallback_used=True, fallback_reason=reason)
+            self._recover_session(session, reason, plan_id=state.get("plan_id"))
+            return {"active_node": "fallback", "fallback_used": True, "fallback_reason": reason}
+
+        graph = StateGraph(OrchestratorState)
+        for name, node in (("diagnose", diagnose), ("generate_plan", generate), ("validate", validate),
+                           ("execute", execute), ("fallback", fallback)):
+            graph.add_node(name, node)
+        graph.set_entry_point("diagnose")
+        graph.add_edge("diagnose", "generate_plan")
+        graph.add_conditional_edges("generate_plan", after_generate,
+                                    {n: n for n in ("validate", "generate_plan", "fallback", END)})
+        graph.add_conditional_edges("validate", after_validate,
+                                    {n: n for n in ("execute", "generate_plan", "fallback")})
+        graph.add_conditional_edges("execute", lambda s: "fallback" if s.get("error_code") else END,
+                                    {"fallback": "fallback", END: END})
+        graph.add_edge("fallback", END)
+        # Per-session checkpointer is discarded at completion, bounding graph history.
+        return graph.compile(checkpointer=MemorySaver(), interrupt_before=["execute"])
+
+    def _drive(self, session, initial=None):
+        try:
+            with self._lock:
+                if self._current is not session:
+                    return
+            result = session.graph.invoke(initial, session.config)
+            self._publish(session, **result)
+            snapshot = session.graph.get_state(session.config)
+            if snapshot.next:
+                with self._lock:
+                    if self._current is not session:
+                        return
+                    if result.get("human_approved") is True:
+                        self._spawn(session)
+                    else:
+                        session.waiting = True
+                        session.state["active_node"] = "waiting_for_human"
+                        self._event("HITL_REQUESTED", session.request, tag="HITL", plan_id=result.get("plan_id"),
+                                    validation_score=result.get("validation_score"))
+                        session.timer = threading.Timer(self.engine.settings.hitl_timeout_seconds,
+                                                        self._expire, args=(session, result.get("plan_id")))
+                        session.timer.daemon = True
+                        session.timer.start()
+                return
+            self._finish(session)
+        except Exception:
+            logger.exception("[ERROR] Background orchestrator failed crisis_id=%s", session.request.crisis_id)
+            with self._lock:
+                if self._current is not session:
+                    return
+            self._publish(session, error="Background orchestration failed; safe recovery applied",
+                          error_code="ACTION_EXECUTION_FAILED", fallback_used=True,
+                          fallback_reason="ACTION_EXECUTION_FAILED")
+            try:
+                self._recover_session(session, "ACTION_EXECUTION_FAILED")
+            except Exception:
+                logger.exception("[ERROR] Fallback failed crisis_id=%s", session.request.crisis_id)
+                self._emergency_hold(session)
+            finally:
+                self._finish(session)
+
+    def _recover_session(self, session, reason, **trace):
+        with self.engine.lock:
+            with self._lock:
+                if self.engine.closed or self._current is not session:
+                    return
+            self.executor.fallback(session.request.affected, reason,
+                                   crisis_id=session.request.crisis_id, **trace)
+
+    def _emergency_hold(self, session):
+        with self.engine.lock:
+            with self._lock:
+                if self.engine.closed or self._current is not session:
+                    return
+            for rid in session.request.affected:
+                robot = self.engine.robot_manager.get_robot(rid)
+                if robot:
                     robot.path = []
+                    robot.hold_steps_remaining = self.engine.settings.max_hold_steps
+            self._event("FALLBACK_HELD", session.request, tag="FALLBACK", reason="RECOVERY_SERVICE_FAILED", fallback=True)
 
+    def human_override(self, approved, plan_id=None):
+        with self._lock:
+            session = self._current
+            if not session or not session.waiting:
+                return {"success": False, "message": "Orchestrator is not waiting for human input."}
+            if plan_id != session.state.get("plan_id"):
+                return {"success": False, "message": "Plan changed. Review the current plan and submit its plan_id."}
+            updates = {"human_approved": approved, "approval_source": "human"}
+            if not approved:
+                plan = CrisisPlan.model_validate(session.state["proposed_plan"])
+                updates.update(rejection_count=session.state["rejection_count"] + 1,
+                               rejected_strategies=session.state["rejected_strategies"] + [plan.strategy_key()],
+                               error_code="HUMAN_REJECTED")
+            session.graph.update_state(session.config, updates, as_node="validate")
+            session.state.update(updates)
+            session.state["active_node"] = "executing" if approved else "regenerating"
+            session.waiting = False
+            if session.timer:
+                session.timer.cancel()
+            self._event("HITL_APPROVED" if approved else "HITL_REJECTED", session.request, tag="HITL", plan_id=plan_id)
+            self._spawn(session)
+            return {"success": True, "message": "Decision accepted. Graph resuming."}
 
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
+    def _expire(self, session, plan_id):
+        with self._lock:
+            if self._current is not session or not session.waiting or session.state.get("plan_id") != plan_id:
+                return
+            session.waiting = False
+            session.state.update(fallback_used=True, fallback_reason="HITL_TIMEOUT", error_code="HITL_TIMEOUT")
+        try:
+            self._recover_session(session, "HITL_TIMEOUT")
+        except Exception:
+            logger.exception("[ERROR] HITL timeout recovery failed")
+            self._emergency_hold(session)
+        finally:
+            self._finish(session)
 
-orchestrator_runner = OrchestratorRunner()
+    def _finish(self, session):
+        with self.engine.lock:
+            with self._lock:
+                # Always release this ID, including late cancelled-worker exits.
+                for robot in self.engine.robot_manager.robots:
+                    robot.orchestration_holds.discard(session.request.crisis_id)
+                if self._current is not session:
+                    return
+                try:
+                    if session.timer:
+                        session.timer.cancel()
+                    if session.state.get("fallback_used"):
+                        self.engine.measurements["orchestrator_fallback_count"] += 1
+                    session.state["active_node"] = "complete"
+                    session.waiting = False
+                    self._last_state = deepcopy(session.state)
+                    self._event("ORCH_COMPLETE", session.request,
+                                duration_ms=round((time.monotonic()-session.started)*1000, 2),
+                                executed_actions=session.state.get("executed_actions", 0),
+                                fallback=session.state.get("fallback_used", False))
+                    if self.engine.negotiation_service:
+                        self.engine.negotiation_service.record("Orchestrator Crisis Resolution",
+                            session.state.get("fallback_reason") or session.state.get("error") or "Validated structured actions applied",
+                            "Fallback" if session.state.get("fallback_used") else "Plan finished")
+                finally:
+                    self._current = None
+                    while self._queue and not self.engine.closed:
+                        request = self._queue.popleft()
+                        self._event("CRISIS_DEQUEUED", request, tag="CRISIS_QUEUE", remaining=len(self._queue))
+                        if self._start_locked(request):
+                            break
+
+    def reset(self):
+        with self.engine.lock:
+            with self._lock:
+                if self._current and self._current.timer:
+                    self._current.timer.cancel()
+                if self._current or self._queue:
+                    self.engine.events.emit("ORCH_CANCELLED", reason="SIMULATION_RESET",
+                                            cancelled_crises=len(self._queue) + int(self._current is not None))
+                self._current = None
+                self._queue.clear()
+                self.engine._deadlock_pairs.clear()
+                self.engine._contention.clear()
+                self.engine._last_contention.clear()
+                self.engine._contention_cells.clear()
+                self.engine._recoveries.clear()
+                self._last_state = {}
+                for robot in self.engine.robot_manager.robots:
+                    robot.orchestration_holds.clear()
