@@ -1,126 +1,55 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Warehouse Swarm AI Operations Centre</title>
-    <link href="{{ url_for('static', path='css/OperationCentre.css') }}?v=validated-actions-1" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Operations | Warehouse Swarm</title>
+<link href="{{ url_for('static', path='css/OperationCentre.css') }}?v=black-ops-3" rel="stylesheet">
 </head>
 <body>
-    <header class="top-header">
-        <div class="header-left">
-            <h1>Warehouse Swarm AI Operations Centre</h1>
-            <div class="status-indicator">
-                <span class="dot connected-dot"></span>
-                <span id="connection-status">Connected</span>
-            </div>
-        </div>
-        <div class="header-stats">
-            <div class="stat-badge">Status: <span id="header-sim-status" class="value">Running</span></div>
-            <div class="stat-badge">Step: <span id="header-step" class="value">0</span></div>
-            <div class="stat-badge">Refresh: <span id="header-refresh" class="value">200ms</span></div>
-            <div class="stat-badge">Robots: <span id="header-robots" class="value">0</span></div>
-            <div class="stat-badge">Tasks: <span id="header-tasks" class="value">0</span></div>
-        </div>
-    </header>
-
-    <main class="dashboard-grid">
-        <!-- LEFT: Warehouse Visualization -->
-        <section class="panel warehouse-panel">
-            <div class="panel-header">
-                <h2>Warehouse Visualization</h2>
-            </div>
-            <div class="panel-content">
-                <div id="grid-container" class="grid-container"></div>
-            </div>
-        </section>
-
-        <!-- CENTER: Agent Inspector -->
-        <section class="panel inspector-panel">
-            <div class="panel-header">
-                <h2>Agent Inspector</h2>
-                <span class="subtitle">Click a robot to inspect</span>
-            </div>
-            <div class="panel-content" id="agent-inspector-content">
-                <div class="empty-state">No agent selected</div>
-            </div>
-        </section>
-
-        <!-- RIGHT: Live Message Bus -->
-        <section class="panel message-bus-panel">
-            <div class="panel-header">
-                <h2>Live Message Bus</h2>
-
-            </div>
-            <div class="message-feed-toolbar">
-                <p id="message-feed-status">Waiting for messages. New messages are collected live.</p>
-                <button type="button" id="message-feed-latest" onclick="showLatestMessages()" disabled>Show latest</button>
-            </div>
-            <div class="panel-content" id="message-bus-content" aria-label="Message reading view" aria-live="off" tabindex="0">
-                <!-- Messages will be appended here -->
-            </div>
-        </section>
-    </main>
-
-    <footer class="bottom-panels">
-        <!-- Auction Monitor -->
-        <section class="panel bottom-panel">
-            <div class="panel-header">
-                <h2>Auction Monitor</h2>
-            </div>
-            <div class="panel-content" id="auction-content">
-            </div>
-        </section>
-
-        <!-- Metrics -->
-        <section class="panel bottom-panel">
-            <div class="panel-header">
-                <h2>Metrics</h2>
-            </div>
-            <div class="panel-content metrics-grid" id="metrics-content">
-                <!-- Metrics populated by JS -->
-            </div>
-        </section>
-
-        <!-- Negotiation Logs -->
-        <section class="panel bottom-panel">
-            <div class="panel-header">
-                <h2>Negotiation Logs</h2>
-            </div>
-            <div class="panel-content" id="negotiation-content">
-            </div>
-        </section>
-
-        <!-- Orchestrator HUD -->
-        <section class="panel bottom-panel orchestrator-panel" id="orchestrator-panel">
-            <div class="panel-header">
-                <h2>🧠 Orchestrator HUD</h2>
-                <span class="subtitle" id="orchestrator-status-badge">INACTIVE</span>
-            </div>
-            <div class="panel-content" id="orchestrator-content">
-                <div class="empty-state">No active crisis orchestration</div>
-            </div>
-        </section>
-    </footer>
-
-    <!-- HITL Approval Overlay -->
-    <div class="hitl-overlay" id="hitl-overlay" style="display: none;">
-        <div class="hitl-modal">
-            <div class="hitl-icon">⚠️</div>
-            <h2 class="hitl-title">HUMAN APPROVAL REQUIRED</h2>
-            <p class="hitl-subtitle">The LangGraph orchestrator has generated a valid crisis plan that <strong>REQUIRES OPERATOR REVIEW</strong>.</p>
-            <div class="hitl-details" id="hitl-details">
-                <!-- Populated by JS -->
-            </div>
-            <p id="hitl-feedback" role="status" aria-live="polite"></p>
-            <div class="hitl-actions">
-                <button class="hitl-btn hitl-approve" id="hitl-approve" onclick="orchestratorOverride(true)">✅ APPROVE</button>
-                <button class="hitl-btn hitl-reject" id="hitl-reject" onclick="orchestratorOverride(false)">❌ REJECT</button>
-            </div>
-        </div>
-    </div>
-
-    <script src="{{ url_for('static', path='js/OperationCentre.js') }}?v=validated-actions-1"></script>
-</body>
-</html>
+<header class="command-header">
+ <div class="identity"><span class="warehouse-mark" aria-hidden="true">W / S</span><div><h1>WAREHOUSE SWARM</h1><span class="eyebrow">OPERATIONS TERMINAL</span></div></div>
+ <div class="run-meta"><span>RUN <b id="run-id" title="Waiting for API">&mdash;</b></span><span>MODEL <b id="model-name">Awaiting model event</b></span><span>SEED <b id="seed">&mdash;</b></span><span>STEP <b id="header-step">&mdash;</b></span></div>
+ <div class="system-state"><strong id="header-sim-status">CONNECTING</strong><span id="connection-status" role="status">API CONNECTING</span></div>
+</header>
+<div class="command-row">
+ <nav aria-label="Operations pages"><a href="/OperationCenter" aria-current="page">01 <span>Live Operations</span></a><button disabled title="Planned page">02 Crisis + Orchestration <small>PLANNED</small></button><button disabled title="Planned page">03 Agent Analytics <small>PLANNED</small></button></nav>
+ <div class="controls" aria-label="Simulation controls"><button id="control-start" class="primary" data-control="start">Start</button><button id="control-pause" data-control="pause">Pause</button><button id="control-step" data-control="step">Step</button><button id="control-reset" data-control="reset">Reset</button><button id="diagnostics-open">Diagnostics</button></div>
+</div>
+<div id="notice" class="notice" role="status" hidden></div>
+<section id="metrics-content" class="telemetry" aria-label="Warehouse telemetry">
+ <div class="kpi progress-kpi"><span>TASKS DELIVERED</span><strong id="kpi-tasks">&mdash; / &mdash;</strong><small id="kpi-remaining">Waiting for state</small><progress id="task-progress" value="0" max="1" aria-label="Task completion"></progress></div>
+ <div class="kpi"><span>MOVING</span><strong id="kpi-moving">&mdash;</strong><small>pickup + delivery</small></div>
+ <div class="kpi"><span id="charge-label">CHARGING</span><strong id="kpi-charging">&mdash;</strong><small id="charge-detail">at bay / en route</small></div>
+ <div class="kpi"><span>IDLE</span><strong id="kpi-idle">&mdash;</strong><small>fleet standby</small></div>
+ <div class="kpi" title="Agent path_blocked belief; excludes intentional holds. Not a persistent-deadlock count."><span>BLOCKED</span><strong id="kpi-blocked">&mdash;</strong><small>next-cell contention</small></div>
+ <div class="kpi"><span>CRISIS / QUEUED</span><strong id="kpi-crisis">&mdash; / &mdash;</strong><small id="crisis-detail">orchestrator state</small></div>
+ <div class="kpi" title="Requests and fallbacks in the retained event window, not lifetime counters."><span>LLM / FALLBACK</span><strong id="kpi-llm">&mdash; / &mdash;</strong><small>recent event window</small></div>
+ <div class="kpi"><span>AVG BATTERY</span><strong id="kpi-battery">&mdash;</strong><small id="fleet-size">fleet energy</small></div>
+</section>
+<div id="operations-workspace" class="operations-workspace">
+<main id="main-workspace" class="workspace">
+ <section class="warehouse-panel" aria-label="Live warehouse">
+  <div class="panel-heading"><h2><span class="section-number">01 /</span> WAREHOUSE FLOOR</h2><span id="grid-size" class="muted">Loading grid</span><div class="map-controls"><button id="map-fit">Fit</button><button id="map-minus" aria-label="Zoom out">&minus;</button><span id="map-zoom">100%</span><button id="map-plus" aria-label="Zoom in">+</button></div></div>
+  <div class="map-toolbar"><div class="layers" aria-label="Map layers"><label><input type="checkbox" data-layer="robots" checked> Robots</label><label><input type="checkbox" data-layer="chargers" checked> Chargers</label><label><input type="checkbox" data-layer="paths" checked> Selected path</label><label><input type="checkbox" data-layer="crisis" checked> Crisis</label></div><span id="map-selection">Select a robot to trace its route</span></div>
+  <div id="completion-banner" hidden role="status"><strong>RUN COMPLETE</strong><span id="completion-detail"></span></div>
+  <div id="map-viewport" tabindex="0" aria-label="Warehouse map viewport; scroll when zoomed"><div id="grid-container"><svg id="warehouse-map" xmlns="http://www.w3.org/2000/svg" aria-label="Warehouse floor plan"><g id="floor-layer"></g><g id="charger-layer"></g><g id="crisis-layer"></g><g id="path-layer"></g><g id="robot-layer"></g></svg></div></div>
+  <div class="map-legend"><span><i class="shelf-key"></i> Shelf / obstacle</span><span><i class="moving-key"></i> Moving</span><span><i class="delivery-key"></i> Delivery</span><span><i class="idle-key"></i> Idle</span><span><i class="charge-key"></i> Charger / charging</span><span><i class="blocked-key"></i> Blocked / held</span><span><i class="energy-key"></i> Energy stop</span><span><i class="crisis-key"></i> Crisis / affected</span><span class="legend-end">P pickup &middot; D delivery &middot; (x, y)</span></div>
+ </section>
+ <div id="context-divider" class="splitter splitter-vertical" role="separator" aria-orientation="vertical" aria-label="Context panel width" aria-controls="context-panel" tabindex="0" title="Drag to resize inspector. Arrow keys resize; double-click resets."></div>
+ <aside id="context-panel" class="context-panel">
+  <div class="context-tabs" role="tablist" aria-label="Context"><button id="tab-crisis" role="tab" aria-selected="true" aria-controls="context-crisis" data-tab="crisis">CRISIS <span id="crisis-tab-count">0</span></button><button id="tab-robot" role="tab" aria-selected="false" aria-controls="context-robot" tabindex="-1" data-tab="robot">SELECTED ROBOT</button><button id="tab-events" role="tab" aria-selected="false" aria-controls="context-events" tabindex="-1" data-tab="events">EVENTS</button></div>
+  <section id="context-crisis" class="context-body" role="tabpanel" aria-labelledby="tab-crisis"><div class="context-heading"><h2>CRISIS CONTROL</h2><span id="orchestrator-status-badge">INACTIVE</span></div><div id="orchestrator-panel"><div id="orchestrator-content"></div></div>
+   <div id="hitl-overlay" style="display:none" class="hitl-review"><h3>OPERATOR REVIEW REQUIRED</h3><p>Only this validated plan is submitted. Reject to request another strategy.</p><div id="hitl-details"></div><p id="hitl-feedback" role="status"></p><div class="controls"><button id="hitl-approve" class="primary">Approve plan</button><button id="hitl-reject">Reject / regenerate</button></div></div>
+   <div class="crisis-footer"><p>Local AI handles exceptional recovery. Routine movement and safety remain deterministic.</p><button id="inject-crisis">Inject aisle collapse</button><span id="crisis-feedback" role="status"></span></div>
+  </section>
+  <section id="context-robot" class="context-body" role="tabpanel" aria-labelledby="tab-robot" hidden><div class="context-heading"><h2>ROBOT INSPECTOR</h2><select id="robot-select" aria-label="Select robot"><option value="">Select robot</option></select></div><div id="agent-inspector-content"><div class="empty-state"><strong>NO ROBOT SELECTED</strong><p>Select a numbered marker on the warehouse floor.</p></div></div></section>
+  <section id="context-events" class="context-body event-context" role="tabpanel" aria-labelledby="tab-events" hidden><div class="context-heading"><h2>EVENT WINDOW</h2><button id="context-follow">LIVE</button></div><label class="event-select">Category <select id="context-filter"><option>ALL</option><option>CNP</option><option>DEADLOCK</option><option>CHARGING</option><option>LLM</option><option>ORCH</option><option>SYSTEM</option></select></label><div id="context-event-list" class="event-list" tabindex="0" aria-label="Context events"></div></section>
+ </aside>
+</main>
+<div id="events-divider" class="splitter splitter-horizontal" role="separator" aria-orientation="horizontal" aria-label="Event tape height" aria-controls="event-tape" tabindex="0" title="Drag to resize events. Arrow keys resize; double-click resets."></div>
+<section id="event-tape" class="event-tape" aria-label="Live event tape"><div class="tape-heading"><h2>EVENT TAPE</h2><div id="event-filters" aria-label="Event filters"><button data-filter="ALL" aria-pressed="true">ALL</button><button data-filter="CNP" aria-pressed="false">CNP</button><button data-filter="DEADLOCK" aria-pressed="false">DEADLOCK</button><button data-filter="CHARGING" aria-pressed="false">CHARGING</button><button data-filter="LLM" aria-pressed="false">LLM</button><button data-filter="ORCH" aria-pressed="false">ORCH</button><button data-filter="SYSTEM" aria-pressed="false">SYSTEM</button></div><span id="event-count" class="muted">Waiting for events</span><button id="tape-follow">LIVE</button></div><div id="event-list" class="event-list" tabindex="0" aria-label="Recent events"></div></section>
+</div>
+<footer class="terminal-footer"><span>LOCAL-FIRST MULTI-AGENT OPERATIONS</span><span id="data-freshness">Awaiting telemetry</span><span>CNP / A* / LANGGRAPH / HITL</span></footer>
+<dialog id="diagnostics" aria-labelledby="diagnostics-title"><div class="panel-heading"><h2 id="diagnostics-title">AGENT COMMUNICATION DIAGNOSTICS</h2><div class="controls"><button id="reset-layout">Reset layout</button><button id="diagnostics-close">Close</button></div></div><div class="diagnostic-columns"><section><h3>AUCTION MONITOR</h3><div id="auction-content"></div><h3>NEGOTIATION LOGS</h3><div id="negotiation-content"></div></section><section><h3>MESSAGE BUS</h3><p id="message-feed-status"></p><button id="message-feed-latest">Show latest</button><div id="message-bus-content" tabindex="0" aria-label="Message reading view"></div></section></div></dialog>
+<script src="{{ url_for('static', path='js/OperationCentre.js') }}?v=live-ops-resize-2"></script>
+</body></html>

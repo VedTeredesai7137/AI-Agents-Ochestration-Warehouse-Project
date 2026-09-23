@@ -539,7 +539,7 @@ Each RobotAgent runs this cycle once per simulation step.
 |---|---|---|
 | `GET` | `/` | API health check |
 | `GET` | `/dashboard` | Browser visualization |
-| `GET` | `/OperationCentre` | Orchestration and agent dashboard |
+| `GET` | `/OperationCenter`, `/OperationCentre` | Live Operations terminal (same template) |
 | `GET` | `/warehouse/grid` | Warehouse grid layout |
 | `GET` | `/robots` | All robot states |
 | `GET` | `/tasks` | All task states |
@@ -662,7 +662,7 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 | `http://127.0.0.1:8000/` | API root |
 | `http://127.0.0.1:8000/docs` | Swagger UI |
 | `http://127.0.0.1:8000/dashboard` | Live dashboard |
-| `http://127.0.0.1:8000/OperationCentre` | Agent and orchestration dashboard |
+| `http://127.0.0.1:8000/OperationCenter` | Live Operations terminal (`/OperationCentre` also supported) |
 
 ---
 
@@ -678,36 +678,199 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 
 ---
 
-## 13. AI Operations Centre
+## 13. Live Operations Terminal
 
-An operations dashboard is provided alongside the original visualization to provide deep observability into the Multi-Agent System.
+`/OperationCenter` is the primary Live Operations page. The existing British-spelling
+`/OperationCentre` URL remains an alias to the same template. `/dashboard` is unchanged.
+The page answers "What is happening in the warehouse right now?" using existing
+REST snapshots, Jinja2, vanilla JavaScript and CSS; it introduces no simulation logic.
 
-### Access Point
-| URL | Description |
-|---|---|
-| `http://127.0.0.1:8000/OperationCentre` | AI Operations Centre |
+### Layout and controls
 
-### New Files
-- `frontend/OperationCentre.html`
-- `frontend/css/OperationCentre.css`
-- `frontend/js/OperationCentre.js`
+- Compact command header: run ID, seed, step, simulation state and actual API connectivity.
+  Completion displays a non-modal **RUN COMPLETE** strip; it does not imply disconnection.
+- Start, Pause, Step and confirmed Reset call existing simulation endpoints. Step is
+  disabled while the background loop runs. Reset refreshes the grid and clears selection/history.
+- Telemetry strip: deliveries/remaining tasks, moving, charging, idle, blocked beliefs,
+  active/queued orchestration, recent LLM requests/fallback sessions and average battery.
+- A large SVG floor plan uses `grid[y][x]`. Fit, zoom and real-data layer toggles cover
+  robots, chargers, the selected path and known crisis cells. Fit uses rectangular
+  logical cells to fill the available area; coordinates and route connectivity are unchanged.
+- Click or keyboard-select a robot, or use the robot selector, to inspect its task,
+  current route endpoint, battery, hold state, beliefs and recent event trace. Its
+  available route and task pickup/delivery endpoints appear on the map.
+- Amber bays and markers distinguish charging travel from charging at a bay. Active
+  crisis robots have a crimson outline; selected robots and their route use bright cyan.
+  Moving/delivering fleet markers remain quieter. Blocked robots use dashed amber;
+  energy-stopped robots use crimson. Zero-state crisis/blocked/fallback KPIs stay muted,
+  while actual incidents and active fallback receive emphasis. Charging warnings show
+  separate charging / energy-stopped counts, derived from robot statuses.
+- CRISIS / SELECTED ROBOT / EVENTS tabs keep context compact. The crisis tab shows
+  **NO ACTIVE CRISIS** when idle, plus the last incident when available. During a
+  crisis it shows graph progress, structured actions, validation, retries, queue and fallback.
+- Valid HITL plans retain explicit Approve / Reject controls with the current `plan_id`.
+  Reject still requests regeneration. Invalid plans never expose approval controls.
+- The bounded bottom event tape and Events tab support category filters and
+  **LIVE / PAUSED-FOLLOW**. Scrolling away from the latest rows freezes that reading
+  snapshot; resume explicitly. Each view renders at most 100 entries.
+- Diagnostics preserves auction winners/bids, negotiation explanations and the existing
+  explicit "Show latest" message-reading snapshot. It loads these extra sources only while open.
+- Confirmed **Inject aisle collapse** uses the existing manual crisis endpoint.
+- Crisis + Orchestration and Agent Analytics navigation are labeled **PLANNED** and
+  disabled; those full pages are not implemented. Scenario/speed controls are omitted
+  because the production API does not provide them.
 
-### UI Features & Visualization Capabilities
-The AI Operations Centre provides a complete orchestration perspective:
-- **Responsive Grid Layout**: Modern, dark-themed, card-based interface with smooth micro-animations.
-- **Top Header**: Real-time simulation status, active connection indicator, and high-level agent/task counts.
-- **Enhanced Warehouse Visualization**: Improved CSS-grid representation of the warehouse, displaying agent IDs, dynamic battery levels via tooltips, and color-coded status animations (e.g., pulsing when negotiating).
-- **Agent Inspector**: Interactive panel that displays the internal cognitive state (current goal, active task, local beliefs, pending message count, and memory event count) of any robot clicked on the grid.
-- **Live Message Bus**: A real-time scrolling feed of inter-agent communications (CFPs, Proposals, Awards, Blocked Paths) with payload previews and type-specific color coding.
-- **Auction Monitor**: Live tracking of Contract Net Protocol (CNP) auctions, listing all bids and identifying the winning robot and estimated cost.
-- **Negotiation Logs**: Timestamped CNP explanations, deterministic greetings, and crisis execution summaries. The orchestrator panel separately shows model-authored actions and reasons.
-- **Live Metrics**: Computed metrics for completed tasks, average swarm battery level, moving/idle breakdown, and total messages processed.
+### Resizable workspace
 
-### Engineering focus
+On desktop (at least 1051px wide and 650px tall), drag the thin divider beside the
+inspector to change its width, or the divider above Event Tape to change its height.
+The default map/inspector split is approximately 68/32. The tape starts at 100px on
+short screens, 142px normally, or 166px on wide screens.
 
-The dashboard exposes CNP messages, task awards, robot state, and validated crisis
-orchestration. It is a local research/demo UI, backed by the tests and evaluation
-commands below. The frontend remains a polling-based vanilla JavaScript app.
+- Inspector: minimum 320px, maximum half the available workspace width. The map
+  retains at least the other half, excluding the 6px separator.
+- Tape: minimum 96px, maximum 45% of available height while retaining at least
+  360px for the main workspace. Its filter/header row stays fixed; event rows scroll.
+- Separators support pointer capture, visible focus, orientation and current-size
+  accessibility metadata. Arrow keys move 10px; Shift + Arrow moves 40px.
+  Left/Up enlarges the trailing pane; Right/Down shrinks it.
+- Double-click a divider or press Home on it to reset that pane. **Diagnostics >
+  Reset layout** restores both defaults and clears the saved preference.
+- Dimensions are stored locally under `warehouse-swarm-operation-layout`, using
+  `rightPanelWidth` and `eventTapeHeight` in pixels. Reload restores them; viewport
+  changes clamp the visible dimensions. Invalid values fall back to defaults.
+  If browser storage is blocked, resizing still works for the current session.
+- `ResizeObserver` recalculates the SVG bounds without resetting zoom or selection.
+  Fit, route coordinates and robot hit targets continue to use the same logical grid.
+  At maximum tape height, fleet labels are necessarily smaller; zoom or select a
+  robot for details. Short/narrow screens use the existing scrollable stacked layout.
+
+### Page structure and visual system
+
+OperationCentre uses a black and graphite control-room presentation. The structure
+is intentionally dense and functional rather than card-based:
+
+```text
+COMMAND HEADER
+  identity, run metadata, model/seed/step, connection state
+COMMAND ROW
+  page navigation and simulation controls
+TELEMETRY STRIP
+  delivery, movement, charging, idle, blocked, crisis, LLM and battery KPIs
+OPERATIONS WORKSPACE
+  WAREHOUSE FLOOR | 6px RESIZER | CONTEXT PANEL
+  map toolbar, SVG warehouse, legend | crisis/robot/events tabs
+6px EVENT RESIZER
+EVENT TAPE
+  category filters, follow state and bounded event rows
+TERMINAL FOOTER
+  local-first status and data freshness
+```
+
+The workspace is implemented as a resizable split pane. The warehouse is the main
+visual surface; the context panel is the inspector and crisis control surface; the
+event tape remains a separate lower reading surface. On narrow screens these regions
+stack vertically without changing their controls or data contracts.
+
+#### Base palette
+
+Large surfaces use neutral black and graphite so semantic colors remain reserved for
+state and operator attention. The stylesheet uses these primary combinations:
+
+| Role | Color | Usage |
+|---|---|---|
+| Root / warehouse | `#030405` | Page background, map viewport and floor |
+| Header | `#050607` | Command header and warehouse section chrome |
+| Command / KPI | `#070809` | Navigation row, telemetry strip and event tape |
+| Context panel | `#0B0D0F` | Inspector, crisis panel and dialogs |
+| Raised control | `#0F1113` | Buttons, active filters and elevated controls |
+| Hover | `#15181B` | Control hover state |
+| Soft border | `#171A1E` | Quiet separators and event row rules |
+| Normal border | `#202428` | Section boundaries and panel dividers |
+| Strong border | `#343A40` | Shelves, focused controls and stronger outlines |
+
+#### Text and semantic colors
+
+| Role | Color | Usage |
+|---|---|---|
+| Primary text | `#F4F6F8` | Headings, values and high-contrast labels |
+| Secondary text | `#B8BEC5` | Supporting labels and event details |
+| Muted text | `#68717B` | Inactive metadata, quiet states and timestamps |
+| Disabled text | `#464C53` | Disabled controls |
+| Cyan | `#5BD8F4` | Selection, active tabs, routes and moving robots |
+| Green | `#50D890` | Healthy state, delivery, completion and connected status |
+| Amber | `#E8B34F` | Charging, charger cells and charging warnings |
+| Orange | `#F08A45` | Blocked movement and deadlock attention |
+| Red | `#EF6673` | Critical robot state and errors |
+| Crimson | `#D94A5F` | Crisis-specific overlays and active crisis information |
+| Violet | `#9B8CFF` | LLM, Gemma, LangGraph and orchestration state |
+
+The UI does not use gradients or large colored panels. Active KPI values receive a
+semantic color and a thin bottom rail, while zero or healthy values recede into the
+neutral palette. Selected tabs use transparent graphite backgrounds with a thin cyan
+underline rather than filled blue blocks. Event rows remain neutral; only category
+labels are colored: CNP cyan, CHARGING amber, DEADLOCK orange, LLM and ORCH violet,
+CRISIS crimson, and SYSTEM gray.
+
+#### Warehouse encoding
+
+The SVG floor uses near-black aisles and map cells. Shelves use graphite fill
+`#24282C` with strong graphite stroke `#343A40`; chargers use dark amber fill with
+an amber outline. Robot markers combine neutral geometry with state color: cyan for
+moving, green for delivery, gray for idle, amber for charging, orange for blocked,
+and red for critical or energy-stopped. A selected robot becomes black with a strong
+cyan border and restrained glow. Selected routes are cyan, charging routes are amber,
+and crisis cells use translucent crimson fill with a crimson border.
+
+### Data freshness and interpretation
+
+Core status/robots/tasks poll on a non-overlapping 400ms-after-response loop;
+agent/event/orchestration summaries poll every 1000ms after response. Status is checked
+at both ends of a core batch to discard resets/grid revisions that cross the reads.
+The grid refreshes on run/revision changes, including external resets and collapses.
+Polling keeps the last good map during failures and shows stale/reconnecting/error
+indicators. Failed endpoints are logged once per failure transition, not every poll.
+
+- Model identity is shown only once an actual model event exposes it; the API does
+  not currently provide configured model metadata before inference.
+- LLM/fallback values count requests and completed orchestrator fallback sessions in
+  the **retained event window**, not lifetime totals. Routine deterministic traffic
+  fallback is excluded from that KPI. The tape still shows its actual events.
+- Blocked counts come from agent `path_blocked` beliefs and exclude intentional
+  holds/charging/idle. They are not a count of persistent reciprocal deadlocks.
+- Charging includes travel. "At bay" requires a charger cell and an arrived route.
+  A route endpoint can be an intermediate recovery leg, not the eventual delivery.
+- Independent REST endpoints are not one atomic fleet snapshot; summaries may lag
+  movement. The freshness footer makes that visible. Known crisis overlays use
+  available crisis state/events; other structural obstacles remain ordinary shelf cells.
+- No synthetic telemetry, cloud model probe, external fonts, new frontend framework,
+  or WebSocket dependency is used.
+
+### UI verification
+
+```powershell
+node --check frontend/js/OperationCentre.js
+node --test tests/operation_centre.test.cjs
+python311\python.exe -m pytest -q
+# Optional visual checks; installs browser tooling only, not an app dependency:
+python311\python.exe -m pip install playwright
+# In a separate terminal, start a DEDICATED test API (the browser check resets it):
+python311\python.exe -m uvicorn backend.api:app --app-dir . --port 8010 --no-access-log
+python311\python.exe tests/live_operations_browser.py --url http://127.0.0.1:8010
+```
+
+The optional script uses installed Microsoft Edge in headless mode. It checks real
+controls, movement, charging, selection, manual collapse, reset and diagnostics.
+It also drags both separators at all three desktop sizes, checks large-map, wide-
+inspector and tall-tape configurations, saved-layout reload, viewport clamping,
+keyboard resizing, reset, corrupt storage and the narrow-screen fallback.
+Completion, malformed API response/recovery and HITL transitions use explicitly
+identified browser-only response fixtures; these do not claim real model execution.
+Screenshots and `browser-checks.json` go to `evaluation_results/ui/` by default.
+Desktop layout was visually checked at 1440x900, 1366x768 and 1920x1080 with no
+page-level overflow; context panels and the event tape scroll internally. Narrow
+screens use a stacked, scrollable layout. The UI pass passed 170 Python tests
+(one existing Starlette/httpx warning) and 12 Node tests.
 
 ---
 
@@ -1183,10 +1346,9 @@ scheduling are **not** promised to be bit-for-bit reproducible.
 - Bad operator coordinates return **400**; malformed request bodies **422**;
   unexpected exceptions return a stable **500** JSON message with server-side logs.
 
-OperationCentre retains its layout and polling. It shows Validation Score/status,
-error/warning counts, escaped structured actions/reasons, fallback status, queue
-count, and the latest completed result. Grid revision/run changes trigger a refresh.
-The old dashboard's grid refresh and polling continue to work.
+OperationCentre now presents the Live Operations layout described in Section 13.
+It retains validation, escaped structured actions, fallback, queue state and HITL.
+Grid revision/run changes trigger a refresh. The original dashboard remains unchanged.
 
 ## 18. Tests
 
@@ -1208,7 +1370,7 @@ strict parsing, deterministic validation, action staging, real control effects,
 HITL approval/rejection, bounded retries, fault fallback, crisis queuing, concurrent
 reads/reset cancellation, API errors, seed replay, metrics, and benchmark artifacts.
 The older `test_repairs.py` regressions are retained and migrated to the new schema.
-Node rendering tests exercise the existing HUD with a minimal DOM test fixture;
+Node rendering tests exercise Live Operations with a minimal DOM test fixture;
 they do not replace a real-browser visual test.
 
 Local-inference scheduling regressions are in `tests/test_local_llm_scheduling.py`:
@@ -1354,8 +1516,8 @@ from cumulative counters and task timestamps, not a potentially evicted event ri
   pins robots. Reset invalidates results but cannot instantly cancel work already
   being computed inside Ollama.
 - The old 3,000-step scheduling baseline finished 31/120. Current completion acceptance is measured separately in Section 20; it is not a universal deadlock-freedom guarantee.
-- Frontend polling remains; no UI redesign, WebSocket/SSE migration, or deployment
-  work is included.
+- Frontend polling remains. The Live Operations redesign is described in Section 13;
+  no WebSocket/SSE migration or deployment work is included.
 
 ### Model-status probe troubleshooting
 

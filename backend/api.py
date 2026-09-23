@@ -167,6 +167,7 @@ def dashboard(request: Request):
         name="dashboard.html"
     )
 
+@app.get("/OperationCenter")
 @app.get("/OperationCentre")
 def operation_centre(request: Request):
     """Serve the advanced AI Operations Centre dashboard."""
