@@ -176,7 +176,7 @@ button[aria-pressed=true] {
 }
 nav {
     display:flex;
-    gap:8px;
+    align-items:stretch;
     align-self:stretch
 }
 nav a,nav button {
@@ -184,21 +184,23 @@ nav a,nav button {
     align-items:center;
     gap:8px;
     font-size:12px;
-    padding:8px 12px;
+    padding:0 14px;
     background:none;
     border:0;
     border-bottom:2px solid transparent;
     border-radius:0;
     text-decoration:none;
-    color:var(--muted)
+    color:var(--muted);
+    transition:color 120ms ease,background-color 120ms ease,border-color 120ms ease
 }
+nav a:hover { color:var(--ink); background:var(--bg-hover) }
 nav a[aria-current] {
     border-bottom-color:var(--activity);
-    color:var(--activity)
-}
-nav a span {
     color:var(--ink)
 }
+.nav-index { color:var(--muted); font:10px var(--mono); letter-spacing:.08em }
+.nav-label { color:currentColor; font-weight:600; letter-spacing:.02em }
+nav a[aria-current] .nav-index { color:var(--activity) }
 nav small {
     font:9px var(--mono)
 }
@@ -1190,9 +1192,53 @@ button.primary:hover:not(:disabled) {
     border-color:#594323;
     color:var(--charging);
 }
-nav a[aria-current] {
-    border-bottom-color:var(--activity);
-    color:var(--activity);
+nav a[aria-current] { border-bottom-color:var(--activity); color:var(--ink); }
+
+/* Shared SwarmOS application navbar: page navigation is the primary header. */
+.command-header {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+    align-items:stretch;
+    gap:0;
+    min-height:52px;
+    padding:0 20px
+}
+.app-name {
+    align-self:center;
+    color:var(--ink);
+    font:650 15px 'Segoe UI',Arial,sans-serif;
+    letter-spacing:.04em;
+    white-space:nowrap
+}
+.command-header > nav { align-self:stretch; justify-self:center; min-width:0 }
+.command-header > nav a {
+    padding:0 14px;
+    transition:color 120ms ease,background-color 120ms ease,border-color 120ms ease
+}
+.header-meta {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:18px;
+    margin-left:auto;
+    min-width:0
+}
+.command-row .header-meta { margin-left:0 }
+.header-spacer { justify-self:end; width:1px }
+nav .nav-unavailable {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:0 14px;
+    color:var(--text-disabled);
+    font-size:12px;
+    white-space:nowrap;
+    cursor:default
+}
+nav .nav-unavailable small {
+    color:var(--text-disabled);
+    font:9px var(--mono);
+    letter-spacing:.06em
 }
 .kpi {
     border-left-color:var(--border-soft);

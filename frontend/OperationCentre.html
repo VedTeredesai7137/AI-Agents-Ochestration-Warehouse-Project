@@ -7,12 +7,12 @@
 </head>
 <body>
 <header class="command-header">
- <div class="identity"><span class="warehouse-mark" aria-hidden="true">W / S</span><div><h1>WAREHOUSE SWARM</h1><span class="eyebrow">OPERATIONS TERMINAL</span></div></div>
- <div class="run-meta"><span>RUN <b id="run-id" title="Waiting for API">&mdash;</b></span><span>MODEL <b id="model-name">Awaiting model event</b></span><span>SEED <b id="seed">&mdash;</b></span><span>STEP <b id="header-step">&mdash;</b></span></div>
- <div class="system-state"><strong id="header-sim-status">CONNECTING</strong><span id="connection-status" role="status">API CONNECTING</span></div>
+ <div class="app-name">SwarmOS</div>
+ <nav aria-label="Operations pages"><a href="/OperationCenter" aria-current="page"><span class="nav-index">01</span><span class="nav-label">Operations</span></a><a href="/CrisisOrchestration"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a><a href="/AgentAnalytics"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a></nav>
+ <span class="header-spacer" aria-hidden="true"></span>
 </header>
 <div class="command-row">
- <nav aria-label="Operations pages"><a href="/OperationCenter" aria-current="page">01 <span>Live Operations</span></a><button disabled title="Planned page">02 Crisis + Orchestration <small>PLANNED</small></button><button disabled title="Planned page">03 Agent Analytics <small>PLANNED</small></button></nav>
+ <div class="header-meta"><div class="run-meta"><span>RUN <b id="run-id" title="Waiting for API">&mdash;</b></span><span>MODEL <b id="model-name">Awaiting model event</b></span><span>SEED <b id="seed">&mdash;</b></span><span>STEP <b id="header-step">&mdash;</b></span></div><div class="system-state"><strong id="header-sim-status">CONNECTING</strong><span id="connection-status" role="status">API CONNECTING</span></div></div>
  <div class="controls" aria-label="Simulation controls"><button id="control-start" class="primary" data-control="start">Start</button><button id="control-pause" data-control="pause">Pause</button><button id="control-step" data-control="step">Step</button><button id="control-reset" data-control="reset">Reset</button><button id="diagnostics-open">Diagnostics</button></div>
 </div>
 <div id="notice" class="notice" role="status" hidden></div>

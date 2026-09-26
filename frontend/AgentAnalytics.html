@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Agent Analytics | Warehouse Swarm</title>
+ <link rel="stylesheet" href="{{ url_for('static', path='css/AgentAnalytics.css') }}?v=1">
+</head>
+<body>
+<header class="command-header">
+ <div class="app-name">SwarmOS</div>
+ <nav aria-label="Operations pages"><a href="/OperationCenter"><span class="nav-index">01</span><span class="nav-label">Operations</span></a><a href="/CrisisOrchestration"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a><a href="/AgentAnalytics" aria-current="page"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a></nav>
+ <span class="header-spacer" aria-hidden="true"></span>
+</header>
+<div class="command-row">
+ <div class="header-meta"><div class="run-meta"><span>FLEET <b id="header-fleet">—</b></span><span>RUN <b id="run-id">—</b></span><span>SEED <b id="seed">—</b></span><span>STEP <b id="step">—</b></span></div><div class="system-state"><strong id="sim-status">CONNECTING</strong><span id="connection" role="status">API CONNECTING</span></div></div>
+ <span class="workspace-note">READ-ONLY / AGENT EVIDENCE</span>
+</div>
+<section class="telemetry" aria-label="Fleet telemetry">
+ <div class="kpi"><span>FLEET</span><strong id="kpi-fleet">—</strong><small>robots observed</small></div>
+ <div class="kpi"><span>MOVING</span><strong id="kpi-moving">—</strong><small>pickup / delivery status</small></div>
+ <div class="kpi" id="metric-charging"><span>CHARGING</span><strong id="kpi-charging">—</strong><small id="charge-caption">at bay / travelling</small></div>
+ <div class="kpi"><span>IDLE</span><strong id="kpi-idle">—</strong><small>reported status</small></div>
+ <div class="kpi" id="metric-blocked"><span>BLOCKED / HELD</span><strong id="kpi-blocked">—</strong><small>contention / intentional</small></div>
+ <div class="kpi" id="metric-battery"><span>AVG BATTERY</span><strong id="kpi-battery">—</strong><small>fleet energy</small></div>
+ <div class="kpi" id="metric-tasks"><span>TASKS COMPLETE</span><strong id="kpi-tasks">— / —</strong><small id="task-caption">waiting for tasks</small></div>
+</section>
+<main class="analytics-workspace">
+ <section class="fleet-panel panel" aria-labelledby="fleet-title">
+  <div class="panel-heading"><h2 id="fleet-title">01 / ROBOT FLEET</h2><span id="fleet-count">—</span></div>
+  <div class="fleet-tools"><label>Filter<select id="fleet-filter"><option value="all">All robots</option><option value="moving">Moving / delivering</option><option value="charging">Charging</option><option value="idle">Idle</option><option value="blocked">Blocked / held</option><option value="low">Battery &lt; 30%</option></select></label><label>Sort<select id="fleet-sort"><option value="id">Robot ID</option><option value="battery-up">Battery ↑</option><option value="battery-down">Battery ↓</option><option value="status">Status</option><option value="task">Current task</option></select></label></div>
+  <div class="fleet-columns" aria-hidden="true"><span>ROBOT / STATE</span><span>BATTERY</span><span>TASK / CELL</span></div>
+  <div id="fleet-list" class="scroll" aria-label="Robot fleet selection"></div>
+  <p class="panel-footnote">Moving is a status, not proof of a move this tick. Low-battery filter: &lt;30%, not the charging policy.</p>
+ </section>
+ <section class="analytics-panel panel" aria-labelledby="analytics-title">
+  <div class="panel-heading"><h2 id="analytics-title">02 / FLEET BEHAVIOR</h2><span id="sample-count">0 samples</span></div>
+  <div class="throughput-section"><div class="section-line"><h3>DELIVERY PROGRESS</h3><strong id="throughput-rate">—</strong></div><svg id="throughput-chart" viewBox="0 0 600 92" role="img" aria-label="Sampled completed tasks by simulation step"></svg><div class="chart-caption"><span id="throughput-window">Waiting for observations</span><span>Cumulative complete / sampled steps</span></div></div>
+  <div class="heat-section"><div class="section-line"><h3>WAREHOUSE OBSERVATIONS</h3><select id="heat-mode" aria-label="Warehouse heatmap mode"><option value="blocked">Blocked observations</option><option value="presence">Fleet presence</option></select></div><div class="heat-viewport"><svg id="heatmap" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Warehouse sampled observations and current robots"><g id="heat-floor"></g><g id="heat-cells"></g><g id="heat-robots"></g></svg></div><p id="heat-caption" class="caption">No history yet. Observations start when this page opens.</p></div>
+  <div class="charger-section"><div class="section-line"><h3>CHARGER BAYS</h3><strong id="charger-summary">—</strong></div><div id="charger-bays"></div><p class="caption">Occupancy ≠ charging. Inbound = current charging route ends at this bay.</p></div>
+ </section>
+ <aside class="inspector-panel panel" aria-labelledby="inspector-title">
+  <div class="panel-heading"><h2 id="inspector-title">03 / SELECTED AGENT</h2><span id="selected-label">NONE</span></div>
+  <div id="agent-summary" class="scroll agent-summary"></div>
+  <div class="trace-heading"><h3>DECISION / EVENT TRACE</h3><button id="trace-follow" aria-pressed="true">LIVE</button></div>
+  <div id="agent-trace" class="scroll" tabindex="0" aria-label="Selected agent evidence trace"></div>
+  <p class="panel-footnote">Messages are publication evidence. Position changes are sampled observations, not a per-tick action log.</p>
+ </aside>
+ <section class="tasks-panel panel" aria-labelledby="tasks-title">
+  <div class="panel-heading"><h2 id="tasks-title">TASK PORTFOLIO</h2><span id="task-count">—</span><label class="inline-label">Show<select id="task-filter"><option value="all">All tasks</option><option value="waiting">Waiting / auction</option><option value="assigned">Assigned</option><option value="pickup">Pickup</option><option value="delivery">Delivery</option><option value="complete">Complete</option><option value="released">Release observed</option></select></label></div>
+  <div class="scroll"><table><thead><tr><th>Task</th><th>State</th><th>Robot</th><th>Pickup → delivery</th><th>CNP / proposals</th><th>Release evidence</th></tr></thead><tbody id="task-rows"></tbody></table></div>
+ </section>
+ <section class="anomalies-panel panel" aria-labelledby="anomalies-title"><div class="panel-heading"><h2 id="anomalies-title">ANOMALIES / RECOVERY</h2><span id="anomaly-count">—</span></div><div id="anomalies" class="scroll" tabindex="0"></div></section>
+</main>
+<footer><span>LOCAL-FIRST / DECENTRALIZED CNP</span><span id="freshness">Awaiting telemetry</span><span id="diagnostic-freshness">Evidence awaiting API</span></footer>
+<script src="{{ url_for('static', path='js/AgentAnalytics.js') }}?v=1"></script>
+</body>
+</html>

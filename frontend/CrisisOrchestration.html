@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Crisis + Orchestration | Warehouse Swarm</title>
+ <link rel="stylesheet" href="{{ url_for('static', path='css/CrisisOrchestration.css') }}?v=1">
+</head>
+<body>
+<header class="command-header">
+ <div class="app-name">SwarmOS</div>
+ <nav aria-label="Operations pages"><a href="/OperationCenter"><span class="nav-index">01</span><span class="nav-label">Operations</span></a><a href="/CrisisOrchestration" aria-current="page"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a><a href="/AgentAnalytics"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a></nav>
+ <span class="header-spacer" aria-hidden="true"></span>
+</header>
+<div class="command-row">
+ <div class="header-meta"><div class="run-meta"><span>RUN <b id="run-id">—</b></span><span>MODEL <b id="model-name">Awaiting model event</b></span><span>SEED <b id="seed">—</b></span><span>STEP <b id="header-step">—</b></span></div><div class="system-state"><strong id="simulation-state">CONNECTING</strong><span id="connection" role="status">API CONNECTING</span></div></div>
+ <div class="controls"><button data-control="start" class="primary">Start</button><button data-control="pause">Pause</button><button data-control="step">Step</button><button data-control="reset" class="danger">Reset</button></div>
+</div>
+<div id="notice" role="status" hidden></div>
+<section class="telemetry" aria-label="Live orchestration telemetry">
+ <div class="kpi" id="metric-active"><span>ACTIVE CRISIS</span><strong id="kpi-active">—</strong><small id="active-kind">Awaiting state</small></div>
+ <div class="kpi" id="metric-queue"><span>QUEUE</span><strong id="kpi-queue">—</strong><small>pending / capacity</small></div>
+ <div class="kpi" id="metric-affected"><span>AFFECTED</span><strong id="kpi-affected">—</strong><small>active incident robots</small></div>
+ <div class="kpi" id="metric-node"><span>LANGGRAPH</span><strong id="kpi-node">—</strong><small>current node</small></div>
+ <div class="kpi" id="metric-validation"><span>VALIDATION</span><strong id="kpi-validation">—</strong><small id="validation-caption">execution readiness</small></div>
+ <div class="kpi" id="metric-latency"><span>LLM LATENCY</span><strong id="kpi-latency">—</strong><small>latest observed response</small></div>
+ <div class="kpi" id="metric-review"><span>REVIEW / RECOVERY</span><strong id="kpi-review">—</strong><small id="review-caption">active orchestration</small></div>
+</section>
+<main class="crisis-workspace">
+ <aside class="timeline-panel panel" aria-labelledby="timeline-title">
+  <div class="panel-heading"><h2 id="timeline-title">01 / INCIDENTS</h2><span id="incident-count" class="muted">0</span></div>
+  <div class="timeline-tools"><button id="follow-active" aria-pressed="true">Follow active</button><button id="inject-crisis">Inject collapse</button></div>
+  <div id="timeline" class="scroll-region" aria-label="Select a crisis"></div>
+  <p class="panel-footnote">Current run · bounded event history.<br>Queued incidents never pin robots.</p>
+ </aside>
+ <section class="impact-panel panel" aria-labelledby="impact-title">
+  <div class="panel-heading"><h2 id="impact-title">02 / CRISIS IMPACT</h2><span id="selected-id" class="mono muted">NO SELECTION</span></div>
+  <div class="incident-heading"><div><strong id="incident-headline">SYSTEM NOMINAL</strong><p id="incident-subtitle">No active crisis. Awaiting telemetry.</p></div><span id="incident-status" class="status-label">IDLE</span></div>
+  <div class="pipeline-heading"><h3>LANGGRAPH EXECUTION</h3><span id="pipeline-note">Stages light up from retained evidence</span></div>
+  <ol id="pipeline" class="pipeline" aria-label="Orchestration stages"></ol>
+  <div id="branch-state" class="branch-state">Local inference handles exceptional recovery. Movement stays deterministic.</div>
+  <div class="map-toolbar"><span id="map-caption">CURRENT WAREHOUSE · (x, y)</span><button id="map-fit" aria-pressed="false">Full floor</button><label>Robot <select id="map-robot" aria-label="Inspect affected robot"><option value="">All affected</option></select></label></div>
+  <div class="map-viewport"><svg id="impact-map" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Crisis impact on the current warehouse"><g id="floor-layer"></g><g id="crisis-layer"></g><g id="route-layer"></g><g id="robot-layer"></g></svg></div>
+  <div id="robot-detail" class="robot-detail">Select an affected robot to inspect its current task and route.</div>
+  <div class="map-legend"><span><i class="key-crisis"></i> Incident cells</span><span><i class="key-affected"></i> Affected</span><span><i class="key-route"></i> Selected route</span><span><i class="key-charge"></i> Charger</span><span class="muted">Unrelated fleet muted</span></div>
+ </section>
+ <aside class="plan-panel panel" aria-labelledby="plan-title">
+  <div class="panel-heading"><h2 id="plan-title">03 / PLAN + SAFETY</h2><span class="violet">LOCAL OLLAMA</span></div>
+  <div class="scroll-region plan-scroll">
+   <section class="detail-section"><h3>MODEL REQUEST</h3><div id="model-detail"></div></section>
+   <section class="detail-section"><h3>STRUCTURED PLAN <span id="parse-state"></span></h3><div id="plan-detail"></div></section>
+   <section class="detail-section"><h3>DETERMINISTIC VALIDATION</h3><div id="validation-detail"></div></section>
+   <section class="detail-section"><h3>EXECUTION / RECOVERY</h3><div id="execution-detail"></div></section>
+  </div>
+  <section id="hitl-review" class="detail-section" hidden aria-labelledby="hitl-title"><h3 id="hitl-title">OPERATOR REVIEW REQUIRED</h3><p>Review the plan and validation above.</p><div class="controls"><button id="approve-plan" class="primary">Approve plan</button><button id="reject-plan">Reject / regenerate</button></div></section>
+ </aside>
+ <section class="trace-panel panel" aria-labelledby="trace-title">
+  <div class="panel-heading"><h2 id="trace-title">ORCHESTRATION TRACE</h2><span id="trace-count" class="muted">0 retained events</span><button id="trace-follow" aria-pressed="true">LIVE</button></div>
+  <div id="trace" class="scroll-region" tabindex="0" aria-label="Structured trace for selected incident"></div>
+ </section>
+ <section class="outcome-panel panel" aria-labelledby="outcome-title"><div class="panel-heading"><h2 id="outcome-title">RECENT OUTCOMES</h2><span class="muted">current run</span></div><div id="outcomes" class="scroll-region"></div></section>
+</main>
+<footer><span>LOCAL-FIRST / CNP / A* / LANGGRAPH / HITL</span><span id="freshness">Awaiting telemetry</span><span>Plans are proposals. ACTION_OK is execution evidence.</span></footer>
+<script src="{{ url_for('static', path='js/CrisisOrchestration.js') }}?v=1"></script>
+</body>
+</html>

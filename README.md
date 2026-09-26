@@ -540,6 +540,7 @@ Each RobotAgent runs this cycle once per simulation step.
 | `GET` | `/` | API health check |
 | `GET` | `/dashboard` | Browser visualization |
 | `GET` | `/OperationCenter`, `/OperationCentre` | Live Operations terminal (same template) |
+| `GET` | `/CrisisOrchestration` | Crisis timeline, impact map, structured plans, validation and HITL desk |
 | `GET` | `/warehouse/grid` | Warehouse grid layout |
 | `GET` | `/robots` | All robot states |
 | `GET` | `/tasks` | All task states |
@@ -663,6 +664,7 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 | `http://127.0.0.1:8000/docs` | Swagger UI |
 | `http://127.0.0.1:8000/dashboard` | Live dashboard |
 | `http://127.0.0.1:8000/OperationCenter` | Live Operations terminal (`/OperationCentre` also supported) |
+| `http://127.0.0.1:8000/CrisisOrchestration` | Crisis + Orchestration desk |
 
 ---
 
@@ -716,9 +718,9 @@ REST snapshots, Jinja2, vanilla JavaScript and CSS; it introduces no simulation 
 - Diagnostics preserves auction winners/bids, negotiation explanations and the existing
   explicit "Show latest" message-reading snapshot. It loads these extra sources only while open.
 - Confirmed **Inject aisle collapse** uses the existing manual crisis endpoint.
-- Crisis + Orchestration and Agent Analytics navigation are labeled **PLANNED** and
-  disabled; those full pages are not implemented. Scenario/speed controls are omitted
-  because the production API does not provide them.
+- Navigation connects **01 Live Operations** and **02 Crisis + Orchestration**.
+  **03 Agent Analytics** opens the read-only fleet inspector. Scenario/speed controls
+  are omitted because the production API does not provide them.
 
 ### Resizable workspace
 
@@ -873,6 +875,130 @@ screens use a stacked, scrollable layout. The UI pass passed 170 Python tests
 (one existing Starlette/httpx warning) and 12 Node tests.
 
 ---
+
+### Agent Analytics (Page 3)
+
+The three workspaces answer complementary questions:
+
+| Page | Question |
+|---|---|
+| `/OperationCenter` — Live Operations | What is happening? |
+| `/CrisisOrchestration` — Crisis desk | What did the AI do? |
+| `/AgentAnalytics` — Agent Analytics | Why is the swarm behaving this way? |
+
+Page 3 is read-only, with dedicated HTML/CSS/JavaScript. It provides a filterable,
+sortable fleet browser; selected-agent battery/task/route/hold state; published
+CNP messages and events; a task portfolio; and current/recent anomalies. Desktop
+panels scroll internally. Pages 1 and 2 retain their controls and behavior.
+
+Delivery progress and blocked-position/presence heatmaps retain up to 120
+distinct-step browser samples. Presence is not proof of congestion. Charger bays
+show current occupancy and inbound charging-route endpoints, distinguishing
+travel from charging at a bay. The low-battery filter (<30%) is a display threshold,
+not a change to charging policy. Evidence does not represent hidden reasoning.
+
+One non-overlapping polling cycle refreshes state about every second and evidence
+about every two seconds. Existing `/simulation/status`, `/robots`, `/tasks`,
+`/agents/status`, `/tasks/agents`, `/agents/message-history`, `/auction/logs`,
+`/orchestrator/events` and `/warehouse/grid` supply all data. No data API was added.
+Events/messages are capped at 1,000 each, sampled changes at 1,200 and visible trace
+rows at 100. Reset clears selection/history and refreshes the grid. API failures
+retain the last valid view with a stale indicator. Reload loses browser samples;
+separate REST snapshots can differ slightly. Published messages do not prove
+consumption, and release evidence is a retained window rather than a lifetime count.
+
+Verification (browser check resets its dedicated server):
+
+```powershell
+node --check frontend/js/AgentAnalytics.js
+python311\python.exe -m py_compile backend/api.py
+python311\python.exe -m pytest -q tests/test_api_evaluation.py
+python311\python.exe -m uvicorn backend.api:app --port 8012 --no-access-log
+# Separate terminal; installed Playwright + Microsoft Edge:
+python311\python.exe tests/agent_analytics_browser.py
+```
+
+The browser check covers navigation, real fleet/tasks, selection, filter/sort,
+polling, reset, outage/recovery and desktop bounds at 1366×768, 1440×900 and
+1920×1080. Screenshots go to `evaluation_results/agent_analytics/`.
+
+### Crisis + Orchestration desk (Page 2)
+
+`/CrisisOrchestration` answers **"A crisis happened. What did the AI actually do?"**
+Dedicated `frontend/CrisisOrchestration.html`, `frontend/css/CrisisOrchestration.css`
+and `frontend/js/CrisisOrchestration.js` retain the same black/graphite palette,
+compact typography, neutral row surfaces and semantic accents as Live Operations.
+The only backend addition is the page GET route. No simulation, graph, validation,
+execution, model or HITL behavior changes.
+
+- **Live telemetry:** active incident, queue/capacity, affected robots, current graph
+  node, validation readiness, latest observed request latency, review/retry/fallback.
+  These KPIs describe the live session; the workspace below describes the selected incident.
+- **Incident timeline:** active, queued and recent entries from current state and
+  retained events. Selection persists across polls; **Follow active** returns to
+  the live incident. Unknown queued type/location is labeled as not retained.
+- **Impact map:** real `grid[y][x]`, crimson incident cells/affected robots, subdued
+  unrelated fleet, amber chargers, cyan selection and current route (amber when
+  charging). The default camera fits affected positions/cells; **Full floor** toggles
+  the complete warehouse. Geometry remains square. Selecting a robot shows its
+  current task/battery/position, available route, task endpoints and proposed waypoint.
+  Historical incidents explicitly show **current positions**, not a recorded replay.
+- **Pipeline:** actual `diagnose`, `generate_plan`, `validate`, `execute` nodes and
+  completion evidence. Parsing is part of generation, not an invented graph node.
+  HITL is the interrupt before execution; fallback and regeneration appear as
+  explicit branches. A schema failure does not claim safety validation was reached.
+- **Plan + safety:** observed Ollama model, request/response timestamps, measured
+  latency, parsed actions with parameters/reasons, deterministic score, issues/codes,
+  available validator component ratios and execution receipts. **PROPOSED** and
+  **ACTION_OK** are distinct. Full prompts are not displayed.
+- **HITL:** fixed review controls remain visible while evidence scrolls. Approve or
+  Reject/Regenerate submits the existing `approved` + `plan_id` contract after a
+  fresh identity check. Historical, invalid, stale and already-submitted plans
+  cannot be approved. Server-side live validation and HTTP 409 handling remain intact.
+- **Trace/outcomes:** up to 200 trace rows for the selected incident, with
+  LIVE/PAUSED-FOLLOW reading behavior. Graph completion is distinct from the
+  simulator's first-movement recovery event; fallback is never labeled successful
+  model execution. Recent outcomes show only recorded durations/action counts.
+- **Controls:** existing Start/Pause/Step/confirmed Reset and confirmed manual
+  collapse injection. Navigation connects all three operational workspaces.
+- **Idle/failure:** SYSTEM NOMINAL, no retained request/plan and an idle pipeline
+  form the ready state. Failure codes, validator rejection, retries, fallback and
+  executor failure remain visible. API failures preserve the last map and disable
+  mutation controls; completion does not imply disconnection.
+
+The desk uses one non-overlapping polling batch every 1,000ms after the previous
+response. It reuses `/simulation/status`, `/orchestrator/state`,
+`/orchestrator/events?limit=1000`, `/robots`, `/tasks` and `/warehouse/grid`.
+Status/run/revision checks discard batches crossing a reset or grid change. Grid
+changes refresh the floor. No new data endpoint or backend history store is added.
+
+**History limits:** the server event ring is bounded. The tab retains at most 2,000
+observed events and 40 incidents, including observed plan snapshots. Reload loses
+those browser-only snapshots; full historical action parameters may be unavailable
+even when parsing/execution events remain. Missing stages are "not observed", not
+assumed successes. Model identity is unknown until an actual LLM event exposes it.
+Separate REST snapshots can differ by a few simulation ticks.
+
+Verification commands (browser check resets its dedicated test server):
+
+```powershell
+node --check frontend/js/CrisisOrchestration.js
+node --test tests/crisis_orchestration.test.cjs tests/operation_centre.test.cjs
+python311\python.exe -m pytest -q tests/test_crisis_page.py tests/test_api_evaluation.py tests/test_orchestrator.py
+python311\python.exe -m uvicorn backend.api:app --app-dir . --port 8011 --no-access-log
+# Separate terminal; optional installed Playwright + Microsoft Edge:
+python311\python.exe tests/crisis_orchestration_browser.py --url http://127.0.0.1:8011
+```
+
+The browser script checks actual routes, both navigation directions, controls,
+grid/robots and manual collapse. Explicit browser-only fixtures cover queue,
+local-model telemetry, structured plans, validation/rejection, HITL payloads,
+regeneration, execution, failure codes, bounded trace and API outage/recovery.
+`test_crisis_page.py` separately exercises the real override endpoint and LangGraph
+rejection/regeneration/approval flow with an injected model client. These fixtures
+do not claim live Ollama success. Screenshots and `browser-checks.json` are written
+to `evaluation_results/crisis_desk/`; desktop checks cover 1366x768, 1440x900 and
+1920x1080. Evidence panels scroll internally; narrow screens stack.
 
 ## 14. LLM Configuration & Bug Resolution Notes
 

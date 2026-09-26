@@ -177,6 +177,18 @@ def operation_centre(request: Request):
     )
 
 
+@app.get("/CrisisOrchestration")
+def crisis_orchestration(request: Request):
+    """Serve the crisis lifecycle desk using existing read/override APIs."""
+    return templates.TemplateResponse(request=request, name="CrisisOrchestration.html")
+
+
+@app.get("/AgentAnalytics")
+def agent_analytics(request: Request):
+    """Serve the read-only fleet and agent evidence workspace."""
+    return templates.TemplateResponse(request=request, name="AgentAnalytics.html")
+
+
 @app.get("/warehouse/grid")
 @snapshot_response
 def get_warehouse_grid():
