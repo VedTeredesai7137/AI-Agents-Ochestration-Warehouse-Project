@@ -314,6 +314,7 @@ function updateStatus(status) {
 
 function updateRobotList(robots) {
     const list = document.getElementById('robot-list');
+    if (!list) return;
     list.innerHTML = '';
 
     for (const robot of robots) {
@@ -425,6 +426,7 @@ function updateAuctionLogs(logs) {
     if (!logs || logs.length === displayedAuctionLogs) return;
     
     const container = document.getElementById('auction-logs');
+    if (!container) return;
     for (let i = displayedAuctionLogs; i < logs.length; i++) {
         const log = logs[i];
         const div = document.createElement('div');
@@ -444,6 +446,7 @@ function updateNegotiationLogs(logs) {
     if (!logs) return;
     
     const container = document.getElementById('negotiation-logs');
+    if (!container) return;
     container.innerHTML = '';
     
     for (let i = 0; i < logs.length; i++) {
