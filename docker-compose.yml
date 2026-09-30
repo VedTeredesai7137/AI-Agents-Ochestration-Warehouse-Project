@@ -1,59 +1,76 @@
-version: '3.8'
-
 services:
-  # Ollama LLM service for negotiation and crisis orchestrator
+  # Local crisis inference; routine CNP and robot execution remain deterministic.
   ollama:
     image: ollama/ollama:latest
     container_name: warehouse-swarm-ollama
-    ports:
-      - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_ORIGINS=*
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      test: ["CMD", "ollama", "list"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
     restart: unless-stopped
+    networks:
+      - warehouse-network
 
   # Main warehouse swarm application
   warehouse-swarm:
     build: .
     container_name: warehouse-swarm-app
     ports:
-      - "8000:8000"
+      - "${APP_BIND_HOST:-127.0.0.1}:${APP_PORT:-8000}:8000"
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - PYTHONPATH=/app
+      # Compose .env interpolation does not automatically export values to containers.
+      LLM_Provider: "${LLM_Provider:-mistral}"
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openai/gpt-oss-120b:free}"
+      OPENROUTER_URL: "${OPENROUTER_URL:-https://openrouter.ai/api/v1/chat/completions}"
+      SIMULATION_SEED: "${SIMULATION_SEED:-42}"
+      ORCHESTRATOR_ENABLED: "${ORCHESTRATOR_ENABLED:-true}"
+      ORCHESTRATOR_MAX_PENDING_CRISIS: "${ORCHESTRATOR_MAX_PENDING_CRISIS:-5}"
+      DEADLOCK_PERSISTENCE_STEPS: "${DEADLOCK_PERSISTENCE_STEPS:-6}"
+      ORCHESTRATOR_MAX_REGENERATIONS: "${ORCHESTRATOR_MAX_REGENERATIONS:-2}"
+      ORCHESTRATOR_AUTO_EXECUTE_THRESHOLD: "${ORCHESTRATOR_AUTO_EXECUTE_THRESHOLD:-0.85}"
+      ORCHESTRATOR_MAX_HOLD_STEPS: "${ORCHESTRATOR_MAX_HOLD_STEPS:-10}"
+      ORCHESTRATOR_YIELD_STEPS: "${ORCHESTRATOR_YIELD_STEPS:-3}"
+      ORCHESTRATOR_SHADOW_HORIZON: "${ORCHESTRATOR_SHADOW_HORIZON:-5}"
+      ORCHESTRATOR_HITL_TIMEOUT_SECONDS: "${ORCHESTRATOR_HITL_TIMEOUT_SECONDS:-300}"
+      EVENT_HISTORY_LIMIT: "${EVENT_HISTORY_LIMIT:-2000}"
+      CRISIS_INTERVAL: "${CRISIS_INTERVAL:-200}"
+      AUTOMATIC_CRISIS_LIMIT: "${AUTOMATIC_CRISIS_LIMIT:-3}"
     depends_on:
       ollama:
-        condition: service_healthy
-    volumes:
-      # Mount frontend assets for development (optional)
-      - ./frontend:/app/frontend:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+        # API startup must not require a healthy model server; fallback works offline.
+        condition: service_started
     restart: unless-stopped
     networks:
       - warehouse-network
 
-  # Helper service to pull mistral model (runs once and exits)
+  # One-off pull of the same model selected by the app; no duplicate ollama entrypoint.
   ollama-setup:
     image: ollama/ollama:latest
     container_name: warehouse-swarm-ollama-setup
     depends_on:
       ollama:
         condition: service_healthy
-    command: ["ollama", "pull", "mistral"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        case "$${LLM_Provider}" in
+          [Mm][Ii][Ss][Tt][Rr][Aa][Ll]) model=mistral:latest ;;
+          [Gg][Ee][Mm][Mm][Aa]) model=gemma4:12b ;;
+          [Oo][Pp][Ee][Nn][Rr][Oo][Uu][Tt][Ee][Rr])
+            echo "OpenRouter selected; no Ollama model pull required"
+            exit 0 ;;
+          *) model="$${LLM_Provider}" ;;
+        esac
+        exec ollama pull "$$model"
     environment:
-      - OLLAMA_HOST=ollama:11434
+      OLLAMA_HOST: http://ollama:11434
+      LLM_Provider: "${LLM_Provider:-mistral}"
     networks:
       - warehouse-network
     restart: "no"

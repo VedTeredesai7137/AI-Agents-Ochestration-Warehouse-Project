@@ -62,6 +62,17 @@ dist/
 .env.development
 .env.test
 .env.production
+.env.*
+!.env.example
+
+# Local tooling, graph data and generated evaluation artifacts
+.codex/
+.agents/
+.code-review-graph/
+.mcp.json
+AGENTS.md
+tests/
+evaluation_results/
 
 # Logs
 *.log

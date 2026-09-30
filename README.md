@@ -8,7 +8,8 @@ The system consists of:
 
 - A **multi-agent simulation core** — autonomous RobotAgents and TaskAgents communicate via a MessageBus. TaskAgents issue Calls for Proposals (CFPs), RobotAgents submit bids (PROPOSALs), and TaskAgents award contracts (TASK_AWARDED). No centralized controller makes allocation decisions.
 - A **FastAPI REST API** — exposes simulation state (robots, tasks, agents, messages), provides simulation control (step, start, pause, reset), and accepts dynamic task creation.
-- A **browser dashboard** — a Jinja2-rendered HTML/CSS/JS page at `/dashboard` that visualizes the warehouse grid in real-time by polling the API every 200ms. It features live bidding logs, agent thought streams, and path intent overlays.
+- **SwarmOS browser workspaces** — Jinja2 templates with vanilla JavaScript and CSS: `/OperationCenter` for live operations, `/CrisisOrchestration` for the AI recovery lifecycle, `/AgentAnalytics` for fleet/agent evidence, and `/dashboard` for the legacy fleet dashboard. All use REST polling. Explanations and traces are observed messages/events or deterministic summaries, not hidden model reasoning.
+- A **LangGraph crisis orchestrator** — the selected Ollama or OpenRouter model proposes strict executable plans; deterministic validation, optional human review and safe fallback control execution. Routine movement and CNP remain deterministic.
 
 The simulation runs in-memory. All state lives in Python objects. There is no database or external message broker. Agent messages and the FIFO crisis queue are held in memory. The warehouse environment (shelves, robot spawns, and tasks) is **procedurally generated** at startup and upon every simulation reset using a run-scoped random generator. Resetting with the same seed reproduces the initial environment; the agents do not train or learn model weights.
 
@@ -19,9 +20,9 @@ The simulation runs in-memory. All state lives in Python objects. There is no da
 ### Architecture Overview
 
 ```text
-Browser Dashboard (HTML/CSS/JS)
+SwarmOS Workspaces (HTML/CSS/JS)
        │
-       │ HTTP (fetch every 200ms)
+       │ HTTP polling (400ms core / 1s summaries; legacy dashboard 200ms)
        ▼
 FastAPI REST API (backend/api.py)
        │
@@ -150,7 +151,7 @@ A RobotAgent submits a proposal only if:
 
 Both RobotAgent bidding and TaskAgent awarding check reachable, energy-feasible
 pickup and loaded delivery itineraries, including real charging stops where needed.
-Each movement to a stop must fit the available battery plus a 5-unit reserve.
+Each movement leg's energy cost plus a 5-unit reserve must fit the available battery.
 At pickup, reserve enough energy to reach a charger **loaded**; after delivery,
 reserve enough to reach one empty. A long task need not fit one battery, but its
 individual legs must. No task is shortened and no parcel is teleported.
@@ -264,7 +265,12 @@ RobotAgents process incoming messages:
 ```text
 Warehouse Swarm Porject/
 ├── README.md
-├── python311/                        # Local Python 3.11
+├── python311/                        # Optional local interpreter; not versioned
+├── Dockerfile                        # Python 3.11, single-worker app image
+├── docker-compose.yml                # App + local Ollama + model pull helper
+├── .env.example                      # Supported local runtime settings
+├── requirements.txt                  # Pinned runtime dependencies
+├── requirements-dev.txt              # Runtime dependencies + pytest
 ├── backend/
 │   ├── __init__.py
 │   ├── api.py                        # FastAPI app with MAS integration
@@ -272,7 +278,7 @@ Warehouse Swarm Porject/
 │   ├── core/                         # Base schemas and configurations
 │   │   ├── models.py
 │   │   ├── constants.py
-│   │   └── llm_config.py             # Environment-based Ollama model selection
+│   │   └── llm_config.py             # Environment-based Ollama/OpenRouter selection
 │   ├── state/                        # In-memory storage managers
 │   │   ├── robot_state.py
 │   │   └── task_state.py
@@ -293,12 +299,18 @@ Warehouse Swarm Porject/
 └── frontend/
     ├── css/
     │   ├── dashboard.css             # Stylesheet for live dashboard
-    │   └── OperationCentre.css       # Stylesheet for AI Operations Centre
+    │   ├── OperationCentre.css       # Live Operations terminal
+    │   ├── CrisisOrchestration.css   # Crisis desk
+    │   └── AgentAnalytics.css        # Fleet inspector
     ├── dashboard.html                # Browser visualization template
-    ├── OperationCentre.html          # AI Operations Centre template
+    ├── OperationCentre.html          # Live Operations template
+    ├── CrisisOrchestration.html      # Crisis + Orchestration template
+    ├── AgentAnalytics.html           # Agent Analytics template
     └── js/
         ├── dashboard.js              # Live dashboard interaction scripts
-        └── OperationCentre.js        # Operations Centre interaction scripts
+        ├── OperationCentre.js        # Live Operations interactions
+        ├── CrisisOrchestration.js    # Observed crisis lifecycle and HITL controls
+        └── AgentAnalytics.js         # Read-only fleet evidence and rolling samples
 ```
 
 ### Backend hardening additions
@@ -309,7 +321,7 @@ The repository tree above shows the original layout. These modules extend it:
 backend/core/settings.py              # Validated run configuration
 backend/core/events.py                # Bounded structured events and counters
 backend/agents/plans.py                # Strict executable action schema/parser
-backend/agents/llm_client.py           # Ollama boundary and fault clients
+backend/agents/llm_client.py           # Ollama/OpenRouter boundaries and fault clients
 backend/agents/plan_validator.py       # Copied-state safety validation
 backend/agents/action_executor.py      # Staged execution and fallback
 backend/simulation/factory.py          # Shared seeded construction
@@ -537,10 +549,11 @@ Each RobotAgent runs this cycle once per simulation step.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | API health check |
+| `GET` | `/` | API liveness response; does not test model readiness or simulation progress |
 | `GET` | `/dashboard` | Browser visualization |
 | `GET` | `/OperationCenter`, `/OperationCentre` | Live Operations terminal (same template) |
 | `GET` | `/CrisisOrchestration` | Crisis timeline, impact map, structured plans, validation and HITL desk |
+| `GET` | `/AgentAnalytics` | Read-only fleet browser, task portfolio and agent evidence |
 | `GET` | `/warehouse/grid` | Warehouse grid layout |
 | `GET` | `/robots` | All robot states |
 | `GET` | `/tasks` | All task states |
@@ -617,33 +630,40 @@ Automatically creates a TaskAgent for the new task. The TaskAgent will issue a C
 
 ### Prerequisites
 
-- Python 3.11 (local at `python311/`)
-- Install runtime packages with `python311\python.exe -m pip install -r requirements.txt` (includes FastAPI, Pydantic, and LangGraph).
-- **Ollama** on port `11434` with the selected model installed enables live inference. The backend also runs without Ollama using logged deterministic fallback. Tests and injected-fault demos do not require Ollama.
+- Python 3.11. The optional `python311/` interpreter is local tooling, not included in a clean clone.
+- On Windows with that interpreter, install runtime packages with `python311\python.exe -m pip install -r requirements.txt`. Otherwise create a virtual environment with `python3.11 -m venv .venv`, activate it, and use `python -m pip install -r requirements.txt`. Install `requirements-dev.txt` for pytest. Node.js is only needed for optional frontend syntax/DOM checks; it is not an application runtime dependency.
+- For local inference, **Ollama** on port `11434` needs the selected model installed. For hosted inference, set an OpenRouter API key. Missing/unavailable inference activates logged deterministic fallback; tests and injected-fault demos need neither service.
 
-### Select the Local LLM Provider
+### Select the Crisis LLM Provider
 
-Set `LLM_Provider` in the project `.env` file. The setting is read when the backend starts and is used by the LangGraph crisis orchestrator through `OllamaClient`.
+Set `LLM_Provider` in the project `.env` file. The setting is read when the backend starts and selects exactly one LangGraph inference client. Copy `.env.example` to `.env` first. The example selects Gemma; when omitted, the provider defaults to Mistral. Keep `.env` private and never commit a real API key.
 
 ```dotenv
 # Use Mistral
 LLM_Provider=mistral
 
-# Or use Gemma 4 12B
+# Or use Gemma 4 12B locally
 # LLM_Provider=gemma
+
+# Or use OpenRouter (uncomment and set the key privately)
+# LLM_Provider=openrouter
+# OPENROUTER_API_KEY=your-key
+# OPENROUTER_MODEL=openai/gpt-oss-120b:free
+# OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
 ```
 
 Provider mappings:
 
-| `LLM_Provider` value | Ollama model |
+| `LLM_Provider` value | Backend/model |
 |---|---|
-| `mistral` | `mistral:latest` |
-| `gemma` | `gemma4:12b` |
+| `mistral` | Ollama `mistral:latest` |
+| `gemma` | Ollama `gemma4:12b` |
+| `openrouter` | OpenRouter `OPENROUTER_MODEL` (default `openai/gpt-oss-120b:free`) |
 
-Use one active `LLM_Provider` line at a time. Restart the API server after changing the value because the selected model is loaded during backend startup.
+Use one active `LLM_Provider` line at a time. Switching to `gemma` requires reachable Ollama; switching to `openrouter` requires `OPENROUTER_API_KEY`. The API key and model setting are ignored by Ollama mode. Restart the API server after changing the provider. OpenRouter lists `openai/gpt-oss-120b` as **paid** and `openai/gpt-oss-120b:free` as its rate-limited **free** variant; select the exact slug you intend. The application does not silently change a paid slug to a free one.
 
 ### Start the LLM Sidecar
-For live model-assisted orchestration, start Ollama:
+For local model-assisted orchestration, start Ollama:
 ```bash
 ollama serve
 ```
@@ -658,6 +678,10 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 
 ### Access Points
 
+The `--reload` command above is for local development. A non-reloading launch is
+`python -m uvicorn backend.api:app --app-dir . --host 0.0.0.0 --port 8000 --workers 1`.
+Always keep one worker: independent workers would each own a different warehouse.
+
 | URL | Description |
 |---|---|
 | `http://127.0.0.1:8000/` | API root |
@@ -665,6 +689,7 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 | `http://127.0.0.1:8000/dashboard` | Live dashboard |
 | `http://127.0.0.1:8000/OperationCenter` | Live Operations terminal (`/OperationCentre` also supported) |
 | `http://127.0.0.1:8000/CrisisOrchestration` | Crisis + Orchestration desk |
+| `http://127.0.0.1:8000/AgentAnalytics` | Read-only fleet/agent inspector |
 
 ---
 
@@ -675,7 +700,8 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 - Orchestration uses structured Python logging; some legacy pathfinding diagnostics retain searchable console tags.
 - `constants.py` is unused.
 - No persistence. Server restart loses all state.
-- No WebSocket support. Dashboard uses 200ms polling.
+- No WebSocket support. The legacy dashboard polls every 200ms; Operations uses 400ms core/1s summary loops and the other workspaces use roughly 1s state loops (after responses).
+- All operators share one simulation. There is no authentication, authorization or built-in TLS; public hosting needs external access control and HTTPS.
 - `AuctionManager` is retained but unused when multi-agent system is active.
 
 ---
@@ -683,13 +709,15 @@ python311\python.exe -m uvicorn backend.api:app --app-dir . --reload
 ## 13. Live Operations Terminal
 
 `/OperationCenter` is the primary Live Operations page. The existing British-spelling
-`/OperationCentre` URL remains an alias to the same template. `/dashboard` is unchanged.
+`/OperationCentre` URL remains an alias to the same template. `/dashboard` remains
+the legacy fleet view, with the same SwarmOS navigation.
 The page answers "What is happening in the warehouse right now?" using existing
 REST snapshots, Jinja2, vanilla JavaScript and CSS; it introduces no simulation logic.
 
 ### Layout and controls
 
-- Compact command header: run ID, seed, step, simulation state and actual API connectivity.
+- Top navbar: **SwarmOS**, centered **01 Operations / 02 Crisis / 03 Analytics / 04 Dashboard** links, with an underline on the current workspace.
+  A compact row below contains run/model/seed/step, simulation/API status and the existing page controls.
   Completion displays a non-modal **RUN COMPLETE** strip; it does not imply disconnection.
 - Start, Pause, Step and confirmed Reset call existing simulation endpoints. Step is
   disabled while the background loop runs. Reset refreshes the grid and clears selection/history.
@@ -718,8 +746,7 @@ REST snapshots, Jinja2, vanilla JavaScript and CSS; it introduces no simulation 
 - Diagnostics preserves auction winners/bids, negotiation explanations and the existing
   explicit "Show latest" message-reading snapshot. It loads these extra sources only while open.
 - Confirmed **Inject aisle collapse** uses the existing manual crisis endpoint.
-- Navigation connects **01 Live Operations** and **02 Crisis + Orchestration**.
-  **03 Agent Analytics** opens the read-only fleet inspector. Scenario/speed controls
+- Navigation connects all four real workspaces; Analytics opens the read-only fleet inspector. Scenario/speed controls
   are omitted because the production API does not provide them.
 
 ### Resizable workspace
@@ -753,10 +780,10 @@ OperationCentre uses a black and graphite control-room presentation. The structu
 is intentionally dense and functional rather than card-based:
 
 ```text
-COMMAND HEADER
-  identity, run metadata, model/seed/step, connection state
-COMMAND ROW
-  page navigation and simulation controls
+TOP NAVBAR
+  SwarmOS | centered Operations / Crisis / Analytics / Dashboard links
+STATUS / ACTION ROW
+  run metadata, model/seed/step, connection state and simulation controls
 TELEMETRY STRIP
   delivery, movement, charging, idle, blocked, crisis, LLM and battery KPIs
 OPERATIONS WORKSPACE
@@ -783,7 +810,7 @@ state and operator attention. The stylesheet uses these primary combinations:
 |---|---|---|
 | Root / warehouse | `#030405` | Page background, map viewport and floor |
 | Header | `#050607` | Command header and warehouse section chrome |
-| Command / KPI | `#070809` | Navigation row, telemetry strip and event tape |
+| Command / KPI | `#070809` | Status/action row, telemetry strip and event tape |
 | Context panel | `#0B0D0F` | Inspector, crisis panel and dialogs |
 | Raised control | `#0F1113` | Buttons, active filters and elevated controls |
 | Hover | `#15181B` | Control hover state |
@@ -1004,17 +1031,20 @@ to `evaluation_results/crisis_desk/`; desktop checks cover 1366x768, 1440x900 an
 
 ### Provider Selection
 
-The backend centralizes Ollama configuration in `backend/core/llm_config.py`:
+The backend centralizes provider configuration in `backend/core/llm_config.py`:
 
 - `LLM_Provider=mistral` selects the installed `mistral:latest` model.
 - `LLM_Provider=gemma` selects the installed `gemma4:12b` model.
+- `LLM_Provider=openrouter` selects `OPENROUTER_MODEL` using OpenRouter Chat Completions; `OPENROUTER_API_KEY` is required.
 - Provider names are case-insensitive and default to `mistral` when omitted.
 - `OLLAMA_URL` may optionally override the default endpoint `http://localhost:11434/api/generate`.
+- `OPENROUTER_URL` defaults to `https://openrouter.ai/api/v1/chat/completions` and must use HTTPS.
 
 Changing `.env` does not change an already-running process. Restart Uvicorn after switching providers.
+OpenRouter requests ask for strict JSON Schema output with compatible-provider routing; the same Pydantic parser, deterministic plan validator, HITL gate and fallback still apply. HTTP/rate-limit failures never directly execute a plan. Missing `OPENROUTER_API_KEY` in OpenRouter mode fails startup with a configuration error rather than leaving a silently broken deployment. No extra SDK dependency is required; the existing `requests` package is used.
 
 ### Crucial Timeout Configuration
-To ensure robustness during local inference (e.g., running `mistral:latest` or `gemma4:12b` via Ollama on consumer hardware), **all LLM request timeouts must be configured to at least 60 seconds**.
+To ensure robustness during local inference (e.g., running `mistral:latest` or `gemma4:12b` via Ollama on consumer hardware), **the inference timeout remains 60 seconds** for both providers.
 - **Important Note for AI Models**: Any future modification to the exceptional orchestration LLM calls must preserve the `timeout=60.0` configuration on all HTTP requests (e.g., `requests.post`). Using small/default timeouts (like 5.0 seconds) will cause `ReadTimeout` exceptions when the local model takes time to initialize or generate responses.
 
 ### Pathfinding Enforcement
@@ -1129,7 +1159,7 @@ To rigorously test the multi-agent negotiation layers, deadlock resolution, and 
    - **Aggressive Battery Drain**: Robots carrying items now consume 2 battery units per step (instead of 1). Loaded movement retains the 2x energy cost. Planned charging stops avoid predictable mid-task drops.
 
 2. **The "Depot" Spawn Choke Point**
-   - Instead of distributing the 40 robots randomly across the bottom of the warehouse, they are exclusively spawned inside a dense 10x4 contiguous block in the bottom-center (Rows 25-28, Cols 20-30).
+   - Instead of distributing the 40 robots randomly across the bottom of the warehouse, they are exclusively spawned inside a dense 10x4 contiguous block in the bottom-center (Rows 25-28, Cols 20-29).
    - This intentional bottleneck forces immediate, massive traffic jams at Step 1, rigorously stress-testing the step-local collision manager and deterministic three-strike recovery. Only persistent unresolved reciprocal contention escalates to the LLM.
 
 3. **Finite Demo Crisis Schedule (Aisle Collapses)**
@@ -1157,19 +1187,21 @@ them. Routine CNP allocation, A*, movement, collision checks, and batteries rema
 outside inference. `SimulationEngine.step()` still ticks TaskAgents before
 RobotAgents; the crisis layer does not centrally award ordinary tasks.
 
-### Local models: fast deterministic layer, slow emergency manager
+### Fast deterministic layer, exceptional model decisions
 
-Local Ollama is the only inference provider. The installed models are
-`mistral:latest` (about 4.4 GB) and `gemma4:12b` (about 7.6 GB), selected through
-`LLM_Provider=mistral` or `LLM_Provider=gemma`. They are intentionally treated as
-slow strategic models: one request may span hundreds or thousands of simulation
-ticks. There are no cloud fallback or API-key assumptions. Ollama metadata reports 7.2B parameters for the installed Mistral model and
-11.9B for Gemma. The model tags are the authoritative selection identifiers.
+Local Ollama supports `mistral:latest` (about 4.4 GB) and `gemma4:12b` (about
+7.6 GB), selected through `LLM_Provider=mistral` or `LLM_Provider=gemma`.
+These are slow strategic models: one request may span hundreds of simulation
+ticks. `LLM_Provider=openrouter` selects one hosted model using the private
+`OPENROUTER_API_KEY`; it is an explicit alternative, never an automatic cloud
+fallback from Ollama. The system still runs its safe deterministic fallback when
+the selected provider times out or is unavailable. Ollama metadata reports 7.2B
+parameters for the installed Mistral model and 11.9B for Gemma.
 
 The fast layer runs every tick: CNP, RobotAgents, A*, occupancy reservations,
 charging, path invalidation, and deterministic recovery. The slow layer runs
 LangGraph, structured plan generation, validation, HITL, execution, and fallback
-only for exceptional incidents. Ollama retains its 60-second request timeout;
+only for exceptional incidents. Inference retains its 60-second request timeout;
 inference holds neither the simulation lock nor the runner lock. Unrelated robots
 keep moving, bidding, completing tasks, and charging during inference.
 
@@ -1424,6 +1456,10 @@ validated once when creating a simulation. Important settings are:
 |---|---|
 | `SIMULATION_SEED` | `42` |
 | `ORCHESTRATOR_ENABLED` | `true` |
+| `LLM_Provider` | `mistral`; `gemma` for local Gemma or `openrouter` for hosted inference |
+| `OPENROUTER_MODEL` | `openai/gpt-oss-120b:free`; applies only to OpenRouter |
+| `OPENROUTER_URL` | `https://openrouter.ai/api/v1/chat/completions`; HTTPS required |
+| `OPENROUTER_API_KEY` | Required only for OpenRouter; configure as a secret, never commit |
 | `ORCHESTRATOR_MAX_REGENERATIONS` | `2` |
 | `ORCHESTRATOR_MAX_PENDING_CRISIS` | `5` |
 | `DEADLOCK_PERSISTENCE_STEPS` | `6` reciprocal failed-movement ticks after both recovery attempts |
@@ -1436,15 +1472,16 @@ validated once when creating a simulation. Important settings are:
 | `CRISIS_INTERVAL` | `200`; `0` disables periodic collapses |
 | `AUTOMATIC_CRISIS_LIMIT` | `3`; maximum successful automatic injections per run |
 
-Ollama inference retains its **60.0 second timeout**, JSON schema output request,
-and temperature 0. Provider mapping stays in `backend/core/llm_config.py`.
+Ollama and OpenRouter inference retain the **60.0 second timeout**, JSON schema
+output request, and temperature 0. Provider mapping stays in
+`backend/core/llm_config.py`.
 The compact prompt contains affected robots only: IDs, positions, batteries,
 parcel/task state, destinations, next three cells, adjacent walkable cells, crisis
 cells, action syntax, and concise validation/rejection feedback. It does not dump
 all robot paths, the full grid, or histories. The JSON grammar exposes each action's
 required parameters (e.g. HOLD requires hold_steps); Pydantic and the deterministic
 validator still verify the actual response. Temperature remains 0 and the timeout
-remains 60 seconds. There is one configured provider, no model router or cloud fallback.
+remains 60 seconds. There is one configured provider and no automatic provider fallback.
 
 `create_simulation()` shares one `random.Random(seed)` across warehouse/task/crisis
 generation. It never seeds the global random module. Reset defaults to the current
@@ -1558,7 +1595,8 @@ python311\python.exe run_benchmark.py --scenario llm_malformed_response --seeds 
 
 Default modes are `baseline` (orchestrator OFF) and `orchestrator` (ON). Both retain
 CNP and use identical initial seed/scenario settings. Use `--modes baseline` to
-avoid inference. ON uses **real Ollama by default**; fault injection is explicit.
+avoid inference. ON uses the **selected real provider** (Ollama by default);
+fault injection is explicit.
 No successful model responses or performance improvements are fabricated.
 
 | Scenario | Configuration |
@@ -1629,8 +1667,8 @@ from cumulative counters and task timestamps, not a potentially evicted event ri
   a crisis. A structurally valid HOLD can defer rather than solve a problem.
 - Simulation-step evaluation excludes model/operator wall-clock waiting. Use the
   recorded latency and explicit HITL policy when interpreting comparisons.
-- Runtime model quality is hardware/provider dependent and requires actual Ollama
-  evaluation; fault-injected smoke runs establish plumbing, not LLM performance.
+- Runtime model quality is hardware/provider dependent and requires actual
+  provider evaluation; fault-injected smoke runs establish plumbing, not LLM performance.
 - Unreachable chargers, depleted robots, and disconnected pickups can require
   operator intervention. The simulator does not implement physical robot rescue.
 - The bounded queue deduplicates deadlock pairs but does not coalesce structural
@@ -1643,7 +1681,8 @@ from cumulative counters and task timestamps, not a potentially evicted event ri
   being computed inside Ollama.
 - The old 3,000-step scheduling baseline finished 31/120. Current completion acceptance is measured separately in Section 20; it is not a universal deadlock-freedom guarantee.
 - Frontend polling remains. The Live Operations redesign is described in Section 13;
-  no WebSocket/SSE migration or deployment work is included.
+  no WebSocket/SSE migration is included. Container configuration and its static
+  audit limits are documented in Section 21.
 
 ### Model-status probe troubleshooting
 
@@ -1777,7 +1816,7 @@ node --check frontend/js/dashboard.js
 node --test tests/operation_centre.test.cjs
 ```
 
-The final Python suite passed **169 tests** (one existing Starlette/httpx
+The 2026-09-17 performance-pass Python suite passed **169 tests** (one existing Starlette/httpx
 deprecation warning). New focused tests cover energy feasibility, recharge-stop
 ownership, loaded movement reserve, bay selection/departure, preserved traffic
 detours, idle clearance, multi-cell charger-entrance retreat, real delivery
@@ -1792,3 +1831,154 @@ requires HTTP 400 for collapsing a charging station.
 re-auctions, crises, LLM calls, and fallbacks. `[SIM][HEALTH]` reports remaining
 work and congestion every 100 ticks. No frontend redesign or deployment changes
 were made in this performance pass.
+
+---
+
+## 21. Container Configuration and Deployment Readiness
+
+### Deployment shape
+
+The Dockerfile packages Python 3.11, pinned runtime dependencies, `backend/` and
+`frontend/`. It runs Uvicorn as an unprivileged user with **one worker**, without
+reload. Templates/static paths resolve from the project directory, and browser
+requests use relative API URLs. Node.js and the optional Windows interpreter are
+not needed inside the image. Tests, `.env`, local Codex/graph data and generated
+evaluation artifacts are excluded from the build context.
+
+Compose defines three services on the same `warehouse-network`:
+
+| Service | Purpose |
+|---|---|
+| `warehouse-swarm` | FastAPI on container port 8000; published to `127.0.0.1:8000` by default |
+| `ollama` | Local inference on internal port 11434; model weights persist in `ollama_data` |
+| `ollama-setup` | One-off pull of the selected local model; no-op when `LLM_Provider=openrouter` |
+
+The pull helper maps `mistral` to `mistral:latest` and `gemma` to `gemma4:12b`,
+case-insensitively. `openrouter` skips the pull. Other local model names are passed through. It does not
+mount a second model store or assume preinstalled host models are in the volume.
+The app waits only for the Ollama service to start, **not** for model readiness:
+failed downloads, unavailable inference or a missing model still produce logged
+deterministic fallback. For a live-AI demo, finish the pull before injecting a crisis.
+
+### Configuration and networking
+
+Copy `.env.example` to `.env` and set one `LLM_Provider` value. Compose explicitly
+passes the supported seed, orchestration, queue, validation, HITL and crisis
+settings plus OpenRouter key/model/URL; a Compose `.env` file alone does not export
+those values to a container. When OpenRouter is selected, Compose still starts
+the Ollama sidecar but does not use it for inference; use a native Render Python
+Web Service for a hosted-only deployment.
+Absent a provider setting, both the app and helper select Mistral.
+
+**Container generation URL:** `http://ollama:11434/api/generate`. The code reads
+`OLLAMA_URL`, not `OLLAMA_BASE_URL`. Compose deliberately sets the internal URL,
+so the localhost URL in the host-development example cannot override it.
+Standalone images can override `OLLAMA_URL` to an accessible Ollama server.
+`localhost` inside the app container refers to that container, not the host or sidecar.
+OpenRouter mode ignores `OLLAMA_URL` and sends requests only to the HTTPS
+`OPENROUTER_URL`.
+
+`APP_BIND_HOST` and `APP_PORT` optionally change the published app address/port.
+The default loopback binding is suitable for a local demo or a host reverse proxy.
+Ollama is not published to the host. Frontend assets are baked into the image;
+there is no deployment-time bind mount hiding packaged templates.
+
+Application liveness uses Python's standard library to request `/`. Ollama
+liveness uses `ollama list`, avoiding a dependency on curl in the Ollama image.
+Neither check proves model readiness, task progress or successful crisis recovery.
+
+### Operational limits before public hosting
+
+- This is one shared, in-memory simulation. Do not increase worker count or run
+  independent replicas behind a load balancer; resets/restarts lose robots, tasks,
+  graph checkpoints, messages, crisis queues and event history. Only model weights persist.
+- Mutating controls and HITL endpoints have no authentication or authorization.
+  Use a trusted network or external authenticated HTTPS reverse proxy before
+  exposing the service publicly. TLS is not implemented in FastAPI here.
+- Compose defaults to CPU inference and makes no GPU reservation. Allocate RAM,
+  disk and, if desired, host-specific GPU access for the selected local model.
+  Stored weights are approximately 4.4GB for Mistral or 7.6GB for Gemma; inference
+  needs additional memory. The retained 60-second timeout can still trigger fallback
+  on slow hardware. Earlier host benchmarks are not container performance results.
+- First model download needs outbound access and sufficient disk. The helper can
+  fail independently of the app; check its outcome before claiming live inference.
+- Python packages are pinned, but `python:3.11-slim` and `ollama/ollama:latest` are
+  moving image tags. Pin tested image digests for a reproducible release. This audit
+  is not a dependency vulnerability scan or an availability/security certification.
+- The source checkout must include `.env.example`, `requirements-dev.txt`,
+  `pytest.ini`, `run_benchmark.py` and `tests/`; these existing files are no longer
+  excluded by `.gitignore`. The application image intentionally omits test tooling.
+
+### Render Python Web Service with OpenRouter
+
+For a one-instance hosted demo, select the **Python 3** runtime and the branch
+containing these changes. Leave Root Directory and Pre-Deploy Command blank.
+Use `pip install -r requirements.txt` as Build Command and
+`python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT --workers 1`
+as Start Command. Set Health Check Path to `/` (liveness only). Render supplies
+`PORT`; do not set it yourself. Keep exactly one worker because every process
+would otherwise own a separate in-memory warehouse.
+
+Set these environment variables in Render (mark the key secret):
+
+| Key | Value / purpose |
+|---|---|
+| `PYTHON_VERSION` | `3.11.16` (fully qualified Python 3.11 security release) |
+| `LLM_Provider` | `openrouter` |
+| `OPENROUTER_API_KEY` | Your private OpenRouter API key; never add it to Git or README |
+| `OPENROUTER_MODEL` | `openai/gpt-oss-120b:free` for the free, rate-limited variant; omit `:free` only if you intend the paid model |
+| `OPENROUTER_URL` | `https://openrouter.ai/api/v1/chat/completions` (optional; this is the default) |
+| `ORCHESTRATOR_ENABLED` | `true` to demonstrate model-assisted crisis handling |
+| `SIMULATION_SEED` | `42` for reproducible initial warehouse; optional default |
+| `EVENT_HISTORY_LIMIT` | `2000` bounded in-memory history; optional default |
+
+`OLLAMA_URL` is unnecessary on Render with OpenRouter. No Ollama container,
+pre-deploy migration, database or API-key file is needed. If OpenRouter is
+unavailable, crisis plans use the existing deterministic fallback. Missing
+`OPENROUTER_API_KEY` is a startup configuration error.
+
+This is **demo deployment**, not authenticated/durable multi-user production:
+public visitors can operate reset/HITL endpoints, and service restarts, redeploys
+or free-instance idle spin-down reset the in-memory simulation and event history.
+Use external access control or add authentication before sharing control access
+widely. A live Render deploy and a real OpenRouter crisis should be smoke-tested
+before claiming hosted inference works; local mocked tests do not prove that.
+
+### Audit verification (2026-09-27)
+
+The static audit corrected separate Compose networks, the unused Ollama URL
+variable, the doubled Ollama pull entrypoint, an unreliable curl health probe,
+missing container setting propagation and ignored reproducibility/test files.
+No simulation, CNP, movement, graph, validator, executor, HITL or UI behavior changed.
+
+- Python suite: **172 passed**, with one existing Starlette/httpx deprecation warning.
+- Frontend DOM suites: **25 passed**; all four JavaScript files passed `node --check`.
+- `compileall` passed for `backend` and `tests`; all four pages, the Operations alias,
+  their CSS/JS assets and the checked state endpoints returned HTTP 200 via TestClient.
+- Compose YAML and network/environment/entrypoint contracts were checked using
+  PyYAML, not Docker. `pip check` found no broken installed requirements.
+- A pip dry run resolved the pinned requirements against CPython 3.11 Linux x86-64
+  wheels. The report is `evaluation_results/dependency-audit.json`; it does not prove
+  a container boots or that every platform/environment marker matches Linux.
+
+**No Docker/Compose commands, image builds, containers or deployments were run.**
+Docker runtime verification, model downloads and GPU/resource sizing remain release
+checks. No new live-model or browser screenshot verification is claimed in this audit.
+
+### OpenRouter provider verification (2026-09-30)
+
+The selected provider now controls the inference transport: Ollama's generation
+endpoint for `mistral`/`gemma`, or OpenRouter Chat Completions for `openrouter`.
+OpenRouter requests include a strict-compatible action schema and use the same
+Pydantic parsing, world validation, HITL and fallback as local inference. The
+server never returns the API key to a browser response.
+
+- `python311\python.exe -m pytest -q`: **180 passed**, one existing
+  Starlette/httpx deprecation warning. Provider tests mock HTTP and cover
+  switching, request shape, valid response parsing, malformed envelopes,
+  timeout, rate limit and release of crisis holds after fallback.
+- `python311\python.exe -m compileall -q backend tests` and `git diff --check`:
+  passed. Compose YAML and OpenRouter environment propagation were parsed
+  without running Docker.
+- No live OpenRouter or Render deployment was performed. A successful real
+  `gpt-oss-120b` plan and the hosted memory/latency budget remain to be verified.

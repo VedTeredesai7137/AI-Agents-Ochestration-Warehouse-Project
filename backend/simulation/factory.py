@@ -3,7 +3,7 @@ from random import Random
 
 from backend.core.settings import Settings
 from backend.core.events import configure_logging, logger
-from backend.core.llm_config import get_llm_model
+from backend.core.llm_config import get_llm_model, get_llm_provider
 from backend.simulation.warehouse import Warehouse
 from backend.state.robot_state import RobotManager
 from backend.state.task_state import TaskManager
@@ -44,8 +44,8 @@ def create_simulation(seed=None, settings=None, llm_client=None, lock=None, task
     engine = SimulationEngine(robots, collision, tasks, charging, pathfinder, agents, task_agents, negotiation,
                               settings=settings, seed=seed, rng=rng, lock=lock, llm_client=llm_client)
     configure_logging()
-    logger.info("[BOOT] Warehouse Swarm backend starting run_id=%s seed=%s llm_provider=%s "
+    logger.info("[BOOT] Warehouse Swarm backend starting run_id=%s seed=%s llm_provider=%s model=%s "
                 "orchestrator_enabled=%s validator_enabled=true max_regenerations=%s auto_execute_threshold=%s",
-                engine.run_id, seed, get_llm_model(), settings.orchestrator_enabled,
+                engine.run_id, seed, get_llm_provider(), get_llm_model(), settings.orchestrator_enabled,
                 settings.max_regenerations, settings.auto_execute_threshold)
     return engine

@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from backend.agents.action_executor import ActionExecutor, ExecutionError
-from backend.agents.llm_client import OllamaClient
+from backend.agents.llm_client import create_llm_client
 from backend.agents.plans import CrisisPlan, PlanError, parse_plan, generation_schema
 from backend.agents.plan_validator import PlanValidator, WorldSnapshot
 from backend.core.events import logger
@@ -84,7 +84,7 @@ def should_execute_or_regenerate(state):
 class OrchestratorRunner:
     def __init__(self, engine, client=None):
         self.engine = engine
-        self.client = client or OllamaClient()
+        self.client = client if client is not None else create_llm_client()
         self.executor = ActionExecutor(engine)
         self.validator = PlanValidator(engine.settings)
         self._lock = threading.RLock()
