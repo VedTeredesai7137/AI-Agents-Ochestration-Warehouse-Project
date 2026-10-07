@@ -19,7 +19,7 @@ def client():
         api.simulation.close()
 
 
-@pytest.mark.parametrize("endpoint", ["/", "/dashboard", "/OperationCentre", "/OperationCenter", "/robots", "/tasks", "/warehouse/grid",
+@pytest.mark.parametrize("endpoint", ["/", "/dashboard", "/OperationCentre", "/OperationCenter", "/SystemOverview", "/robots", "/tasks", "/warehouse/grid",
     "/agents/status", "/agents/messages", "/agents/message-history", "/tasks/agents", "/auction/logs",
     "/negotiation/logs", "/simulation/status", "/orchestrator/state", "/orchestrator/events"])
 def test_endpoints_healthy(client,endpoint):

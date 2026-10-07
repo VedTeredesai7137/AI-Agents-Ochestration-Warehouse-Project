@@ -8,7 +8,7 @@ The system consists of:
 
 - A **multi-agent simulation core** — autonomous RobotAgents and TaskAgents communicate via a MessageBus. TaskAgents issue Calls for Proposals (CFPs), RobotAgents submit bids (PROPOSALs), and TaskAgents award contracts (TASK_AWARDED). No centralized controller makes allocation decisions.
 - A **FastAPI REST API** — exposes simulation state (robots, tasks, agents, messages), provides simulation control (step, start, pause, reset), and accepts dynamic task creation.
-- **SwarmOS browser workspaces** — Jinja2 templates with vanilla JavaScript and CSS: `/OperationCenter` for live operations, `/CrisisOrchestration` for the AI recovery lifecycle, `/AgentAnalytics` for fleet/agent evidence, and `/dashboard` for the legacy fleet dashboard. All use REST polling. Explanations and traces are observed messages/events or deterministic summaries, not hidden model reasoning.
+- **SwarmOS browser workspaces** — Jinja2 templates with vanilla JavaScript and CSS: `/OperationCenter` for live operations, `/CrisisOrchestration` for the AI recovery lifecycle, `/AgentAnalytics` for fleet/agent evidence, `/SystemOverview` for the architecture story, and `/dashboard` for the legacy fleet dashboard. Live facts use REST polling. Explanations and traces are observed messages/events or deterministic summaries, not hidden model reasoning.
 - A **LangGraph crisis orchestrator** — the selected Ollama or OpenRouter model proposes strict executable plans; deterministic validation, optional human review and safe fallback control execution. Routine movement and CNP remain deterministic.
 
 The simulation runs in-memory. All state lives in Python objects. There is no database or external message broker. Agent messages and the FIFO crisis queue are held in memory. The warehouse environment (shelves, robot spawns, and tasks) is **procedurally generated** at startup and upon every simulation reset using a run-scoped random generator. Resetting with the same seed reproduces the initial environment; the agents do not train or learn model weights.
@@ -554,6 +554,7 @@ Each RobotAgent runs this cycle once per simulation step.
 | `GET` | `/OperationCenter`, `/OperationCentre` | Live Operations terminal (same template) |
 | `GET` | `/CrisisOrchestration` | Crisis timeline, impact map, structured plans, validation and HITL desk |
 | `GET` | `/AgentAnalytics` | Read-only fleet browser, task portfolio and agent evidence |
+| `GET` | `/SystemOverview` | Architecture story, safety gates, incident playbook and observed run facts |
 | `GET` | `/warehouse/grid` | Warehouse grid layout |
 | `GET` | `/robots` | All robot states |
 | `GET` | `/tasks` | All task states |
@@ -648,7 +649,7 @@ LLM_Provider=mistral
 # Or use OpenRouter (uncomment and set the key privately)
 # LLM_Provider=openrouter
 # OPENROUTER_API_KEY=your-key
-# OPENROUTER_MODEL=openai/gpt-oss-120b:free
+# OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 # OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
 ```
 
@@ -658,9 +659,9 @@ Provider mappings:
 |---|---|
 | `mistral` | Ollama `mistral:latest` |
 | `gemma` | Ollama `gemma4:12b` |
-| `openrouter` | OpenRouter `OPENROUTER_MODEL` (default `openai/gpt-oss-120b:free`) |
+| `openrouter` | OpenRouter `OPENROUTER_MODEL` (explicit model slug required) |
 
-Use one active `LLM_Provider` line at a time. Switching to `gemma` requires reachable Ollama; switching to `openrouter` requires `OPENROUTER_API_KEY`. The API key and model setting are ignored by Ollama mode. Restart the API server after changing the provider. OpenRouter lists `openai/gpt-oss-120b` as **paid** and `openai/gpt-oss-120b:free` as its rate-limited **free** variant; select the exact slug you intend. The application does not silently change a paid slug to a free one.
+Use one active `LLM_Provider` line at a time. Switching to `gemma` requires reachable Ollama; switching to `openrouter` requires `OPENROUTER_API_KEY` and an explicit `OPENROUTER_MODEL`. Those cloud settings are ignored by Ollama mode. Restart the API after changing the provider. The example now uses `nvidia/nemotron-3-super-120b-a12b:free`, which passed a real structured-plan smoke check on 2026-10-08. **The earlier check returned HTTP 404 for `openai/gpt-oss-120b:free`: OpenRouter reported that model is unavailable for free.** The application never switches to a paid model automatically. Catalog pages and past availability do not guarantee current inference access.
 
 ### Start the LLM Sidecar
 For local model-assisted orchestration, start Ollama:
@@ -1036,6 +1037,7 @@ The backend centralizes provider configuration in `backend/core/llm_config.py`:
 - `LLM_Provider=mistral` selects the installed `mistral:latest` model.
 - `LLM_Provider=gemma` selects the installed `gemma4:12b` model.
 - `LLM_Provider=openrouter` selects `OPENROUTER_MODEL` using OpenRouter Chat Completions; `OPENROUTER_API_KEY` is required.
+- `OPENROUTER_MODEL` is required explicitly; withdrawn free models are never replaced by a paid slug automatically.
 - Provider names are case-insensitive and default to `mistral` when omitted.
 - `OLLAMA_URL` may optionally override the default endpoint `http://localhost:11434/api/generate`.
 - `OPENROUTER_URL` defaults to `https://openrouter.ai/api/v1/chat/completions` and must use HTTPS.
@@ -1163,7 +1165,7 @@ To rigorously test the multi-agent negotiation layers, deadlock resolution, and 
    - This intentional bottleneck forces immediate, massive traffic jams at Step 1, rigorously stress-testing the step-local collision manager and deterministic three-strike recovery. Only persistent unresolved reciprocal contention escalates to the LLM.
 
 3. **Finite Demo Crisis Schedule (Aisle Collapses)**
-   - **Normal schedule**: up to **3** automatic collapses, attempted every **200** steps (normally 200, 400, 600). `CRISIS_INTERVAL` and `AUTOMATIC_CRISIS_LIMIT` configure this; no automatic injection after task completion.
+   - **Normal schedule**: a shared run budget of **6** admitted incidents, with automatic attempts spaced **200** steps apart. `CRISIS_BUDGET` and `CRISIS_INTERVAL` configure this; manual and escalated incidents consume the same budget. No automatic injection follows task completion. Older `AUTOMATIC_CRISIS_LIMIT` remains a total-budget alias when `CRISIS_BUDGET` is absent.
    - **Backpressure**: A scheduled collapse is skipped when active/pending structural orchestration exists or the pending queue is full. The next normal interval retries; skipped injections do not accumulate.
    - **Targeting**: three contiguous floor cells, biased toward central rows 10-20. Automatic selection excludes unfinished pickup/delivery cells and checks that robots, endpoints, and chargers retain structural connectivity. Manual selected-cell injection remains available and can create unrecoverable scenarios.
 
@@ -1229,7 +1231,7 @@ for every multi-robot traffic cycle.
 
 **Queue admission and backpressure:**
 
-- Crisis kinds are `DEADLOCK` and `STRUCTURAL_COLLAPSE`.
+- Crisis kinds are `DEADLOCK`, `STRUCTURAL_COLLAPSE`, `ROBOT_IMMOBILIZED`, `CHARGER_OUTAGE`, and `CRITICAL_TASK`.
 - `ORCHESTRATOR_MAX_PENDING_CRISIS=5` limits pending work, in addition to one active
   crisis. This remains a process-local `deque`.
 - Same-pair active/pending requests return the existing crisis ID and log
@@ -1243,12 +1245,35 @@ for every multi-robot traffic cycle.
 - A full queue logs `[CRISIS_QUEUE][BACKPRESSURE]` and rejects admission without
   adding holds. Deterministic recovery remains available. The rejected pair is
   latched until a new incident begins, avoiding repeated admission spam.
-- Periodic collapses use `CRISIS_INTERVAL=200` and `AUTOMATIC_CRISIS_LIMIT=3`.
-  Active/pending structural work or a full queue skips that injection with `[CRISIS][PERIODIC_SKIPPED]` and reason
-  `ORCHESTRATOR_BACKPRESSURE`; the next interval retries while below the finite limit.
-- Manual structural injections still apply safe obstacle/path updates. If admission
-  is full, they use deterministic recovery. Pending structural requests are not
-  coalesced and are not discarded solely because some robots have already moved.
+- Automatic attempts use `CRISIS_INTERVAL=200` and the shared `CRISIS_BUDGET=6`.
+  The sequence rotates through obstruction, immobilization, charger outage and urgent-order disruption; deadlock is detected from genuine persistence rather than fabricated.
+- Manual, automatic and natural escalations share the same admission budget.
+  One accepted manual request removes one future automatic slot and resets its
+  next due step to `current_step + CRISIS_INTERVAL`. Rejected input consumes no
+  slot. A queued incident that becomes stale still consumes its admitted slot.
+- Automatic attempts are postponed while any orchestration is active/pending.
+  Manual requests can queue within capacity, but their physical effects wait until
+  activation. Queued robots keep operating and never acquire orchestration holds.
+  Eligibility is rechecked at the front; unsafe or stale work is dropped.
+- `/simulation/status` and `/orchestrator/state` expose `crisis_budget`,
+  `crises_submitted`, `crises_completed`, `crises_remaining`,
+  `next_automatic_crisis_step`, `crisis_types`, and bounded incident summaries.
+  Completed means terminal incident handling/effect cleanup; physical movement
+  recovery remains a separate measurement. A run may finish with unused slots.
+
+| Incident | Actual effect and recovery |
+|---|---|
+| `STRUCTURAL_COLLAPSE` | Eligible cells become `S`; endpoint/charger connectivity is preserved, and existing A* replans immediately at activation. Permanent obstruction remains after orchestration. |
+| `DEADLOCK` | Only an unresolved reciprocal pair after deterministic recovery escalates; pair deduplication and stale dropping remain in force. |
+| `ROBOT_IMMOBILIZED` | Temporary movement/bidding fault; movement actions are rejected by the validator. Safe reassignment/fallback uses TaskManager release and CNP. Terminal/reset cleanup clears the fault. |
+| `CHARGER_OUTAGE` | An unoccupied bay temporarily becomes walkable non-charging floor. Selection cannot strand robots without charging energy. Charging routes replan; terminal/reset cleanup restores the bay. |
+| `CRITICAL_TASK` | An owned unfinished order becomes CRITICAL without adding tasks or skipping delivery. Reassignment/fallback safely releases it into existing emergency CNP. Priority persists after recovery. |
+
+The Crisis desk's incident selector calls the existing POST endpoint with
+`{"kind":"ROBOT_IMMOBILIZED","robot_ids":[1]}`, for example. `kind` defaults to
+structural collapse for backward compatibility; `coords` applies to that type,
+and `task_id` can select an urgent order. Invalid input returns 400/422; exhausted
+budget, unavailable incident or queue capacity returns 409.
 
 **Hold lifecycle and immediate safety:**
 
@@ -1258,8 +1283,8 @@ failure, HITL timeout, execution/startup failure, cancellation, and reset all
 release that ID. Final cleanup clears the active session even if completion logging
 fails. A late cancelled worker cannot mutate a newer session.
 
-Structural cells become `S` under the simulation lock. Affected remaining and
-delivery paths are immediately replanned through existing A*, before any LLM wait.
+Structural cells become `S` under the simulation lock when the incident activates.
+Affected remaining and delivery paths are immediately replanned through existing A*, before any LLM wait.
 Full remaining-path validation and occupancy checks still guard every movement.
 Deterministic recovery for another incident cannot mutate a robot pinned by the
 active crisis.
@@ -1457,7 +1482,7 @@ validated once when creating a simulation. Important settings are:
 | `SIMULATION_SEED` | `42` |
 | `ORCHESTRATOR_ENABLED` | `true` |
 | `LLM_Provider` | `mistral`; `gemma` for local Gemma or `openrouter` for hosted inference |
-| `OPENROUTER_MODEL` | `openai/gpt-oss-120b:free`; applies only to OpenRouter |
+| `OPENROUTER_MODEL` | Explicit available slug required for OpenRouter; no automatic paid substitution |
 | `OPENROUTER_URL` | `https://openrouter.ai/api/v1/chat/completions`; HTTPS required |
 | `OPENROUTER_API_KEY` | Required only for OpenRouter; configure as a secret, never commit |
 | `ORCHESTRATOR_MAX_REGENERATIONS` | `2` |
@@ -1469,8 +1494,9 @@ validated once when creating a simulation. Important settings are:
 | `ORCHESTRATOR_SHADOW_HORIZON` | `5` |
 | `ORCHESTRATOR_HITL_TIMEOUT_SECONDS` | `300` |
 | `EVENT_HISTORY_LIMIT` | `2000` |
-| `CRISIS_INTERVAL` | `200`; `0` disables periodic collapses |
-| `AUTOMATIC_CRISIS_LIMIT` | `3`; maximum successful automatic injections per run |
+| `CRISIS_INTERVAL` | `200`; `0` disables automatic attempts |
+| `CRISIS_BUDGET` | Effective default `6`; shared manual/automatic/natural admission budget |
+| `AUTOMATIC_CRISIS_LIMIT` | Legacy total-budget alias, default `6`; `CRISIS_BUDGET` takes precedence |
 
 Ollama and OpenRouter inference retain the **60.0 second timeout**, JSON schema
 output request, and temperature 0. Provider mapping stays in
@@ -1926,11 +1952,12 @@ Set these environment variables in Render (mark the key secret):
 | `PYTHON_VERSION` | `3.11.16` (fully qualified Python 3.11 security release) |
 | `LLM_Provider` | `openrouter` |
 | `OPENROUTER_API_KEY` | Your private OpenRouter API key; never add it to Git or README |
-| `OPENROUTER_MODEL` | `openai/gpt-oss-120b:free` for the free, rate-limited variant; omit `:free` only if you intend the paid model |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` passed the 2026-10-08 structured smoke check; select explicitly |
 | `OPENROUTER_URL` | `https://openrouter.ai/api/v1/chat/completions` (optional; this is the default) |
 | `ORCHESTRATOR_ENABLED` | `true` to demonstrate model-assisted crisis handling |
 | `SIMULATION_SEED` | `42` for reproducible initial warehouse; optional default |
 | `EVENT_HISTORY_LIMIT` | `2000` bounded in-memory history; optional default |
+| `CRISIS_BUDGET` | `6` total admitted incidents; set explicitly when migrating from an older `.env` with `AUTOMATIC_CRISIS_LIMIT=3` |
 
 `OLLAMA_URL` is unnecessary on Render with OpenRouter. No Ollama container,
 pre-deploy migration, database or API-key file is needed. If OpenRouter is
@@ -1982,3 +2009,137 @@ server never returns the API key to a browser response.
   without running Docker.
 - No live OpenRouter or Render deployment was performed. A successful real
   `gpt-oss-120b` plan and the hosted memory/latency budget remain to be verified.
+
+## 22. System Overview, Expanded Incidents and LLM Diagnostics
+
+`GET /SystemOverview` is the recruiter-facing architecture guide. Dedicated
+`frontend/SystemOverview.html`, `frontend/css/SystemOverview.css` and
+`frontend/js/SystemOverview.js` use the same black/graphite SwarmOS design.
+Navigation links to it from all existing workspaces. The guide explains the
+coordination problem, CNP communication, deterministic movement, exceptional
+LangGraph recovery, the parser/validator gate, operator review, fallback and the
+five executable actions. Its small live readout polls existing status/state APIs
+every five seconds; it creates no additional backend storage or telemetry history.
+Unavailable API telemetry leaves the static architecture story readable.
+
+The Crisis desk shows the configured provider/model before the first request,
+then request timing, HTTP status, parse outcome and a sanitized provider message.
+Transport failure is labelled **NO PLAN / MODEL FAILURE**, rather than suggesting
+that a world validator rejected a plan which never arrived. Event traces include
+`LLM_REQUEST`, `LLM_RESPONSE_RECEIVED`, `LLM_PARSE_ERROR`, `LLM_SUCCESS` or
+`LLM_FAILURE`, then the existing validator, HITL, executor and fallback events.
+HTTP 401, 402, 429, 404 and 400 are distinguished with `failure_type` while
+retaining `LLM_UNAVAILABLE` for the safe fallback branch. Neither request headers,
+keys nor raw provider metadata are logged.
+
+The live OpenRouter check on **2026-10-08** made one network request with the
+configured `openai/gpt-oss-120b:free` model and the actual action schema. It returned
+**HTTP 404 in about 703 ms**, with the provider reporting that this model is
+unavailable for free and suggesting its paid slug. No usable plan was returned.
+The client previously caught its own `PlanError` under `ValueError`, relabelling
+that response as invalid JSON; the catch order is now corrected and covered by a
+404/redaction/fallback regression. No paid request or second live model call was
+made in that check. After the configured model was changed to
+`nvidia/nemotron-3-super-120b-a12b:free`, one additional authorized smoke request
+returned **HTTP 200 from Nvidia in 3047 ms**, with one valid `HOLD` action parsed
+by the actual Pydantic schema. It used the production client's strict JSON Schema
+request and compatible-provider routing. This proves transport and plan parsing;
+world validation, HITL and execution are covered separately by the automated
+integration suite. No model reasoning text or API key was logged or exposed.
+
+Current hosted configuration (keep the real key private):
+
+```dotenv
+LLM_Provider=openrouter
+OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
+ORCHESTRATOR_ENABLED=true
+CRISIS_BUDGET=6
+```
+
+Set `LLM_Provider=gemma` and restart to use local `gemma4:12b` instead. The model
+readout on the Crisis desk and Overview page follows the configured provider;
+it does not hardcode GPT-OSS or Gemma.
+
+Reproduce a single explicit inference check (uses the selected provider, may
+consume its quota/cost):
+
+```bash
+python -m backend.evaluation.llm_smoke
+```
+
+For the bundled isolated Windows interpreter:
+
+```powershell
+python311\python.exe -c "import sys,runpy; sys.path.insert(0,'.'); runpy.run_module('backend.evaluation.llm_smoke',run_name='__main__')"
+```
+
+Incident preflight also checks owned-task energy itineraries using the existing
+ChargingManager on copied grid state. Connected floor space alone does not prove
+that a loaded robot can still reach charging stops. Structural/outage faults that
+would invalidate a currently feasible itinerary are refused; movement and battery
+guards remain unchanged.
+
+The new shared budget is controlled by `CRISIS_BUDGET=6`. Keep `CRISIS_INTERVAL=200`
+for the normal demo; `0` disables automatic attempts while allowing budgeted manual
+requests. An energy-unsafe charger outage is skipped before admission and does
+not consume a slot. Queued requests revalidate at activation; stale admitted work
+still consumes its slot. Manual deadlock requests cannot bypass the persistence
+gate. The incident selector, current budget and terminal count are visible on the
+Crisis desk. See Section 17 for each incident's physical effect and cleanup.
+
+Focused regressions are in `tests/test_crisis_budget.py`,
+`tests/test_llm_providers.py`, `tests/test_system_overview.py` and the existing
+scheduling/throughput suites. The browser check uses a dedicated local server and
+mocked inference, never a second real provider request:
+
+```powershell
+python311\python.exe -m pytest -q
+python311\python.exe -m compileall -q backend tests
+node --check frontend/js/SystemOverview.js
+node --check frontend/js/CrisisOrchestration.js
+node --test tests/crisis_orchestration.test.cjs tests/operation_centre.test.cjs
+python311\python.exe tests/system_overview_browser.py
+$env:CRISIS_BUDGET='6'
+python311\python.exe run_benchmark.py --completion --seeds 42 --fault LLM_OFFLINE --output evaluation_results/release_verification
+```
+
+Browser verification covered 1366×768, 1440×900 and 1920×1080, internal story
+scrolling without document overflow, navigation, provider-error visibility,
+manual budget consumption and a usable API-stale state. Screenshots were inspected;
+there were no JavaScript page errors. Artifacts are in
+`evaluation_results/system_overview/`. This does not claim successful live inference.
+
+Final non-Docker verification on 2026-10-08: **193 pytest tests passed**, with one
+existing Starlette/httpx deprecation warning; **25 frontend DOM tests passed**.
+Python compilation, both changed JavaScript syntax checks and `git diff --check`
+passed. The final focused crisis-budget suite also passed all **9** tests.
+
+The seed-42 normal completion harness used 40 robots, 120 tasks, an explicit
+six-slot budget and injected offline inference. It checked delivery evidence,
+occupancy, orthogonal movement, battery range, queue bounds and orphaned holds
+throughout the run. Final measured result:
+
+| Measurement | Observed value |
+|---|---|
+| Genuine deliveries | `120 / 120` |
+| Wall-clock time (including setup/checks) | `37.844 seconds` |
+| Simulation steps | `1768` |
+| Successful moves | `16046` |
+| Admitted crises / automatic crises | `6 / 6` |
+| Charging events | `419` |
+| Task re-auctions | `43` |
+| Injected model requests / failures / fallbacks | `6 / 6 / 6` |
+| Live model successes in this benchmark | `0`; inference was explicitly offline |
+| Orphaned holds in retained health checkpoints | `0` |
+| Completion acceptance (<900 seconds) | **PASS** |
+
+JSON/CSV evidence is in `evaluation_results/release_verification/`, including
+`benchmark_20261007T195522846547Z.json`. This is a measured local acceptance run,
+not a promised Render/Gemma/OpenRouter performance improvement. Earlier failed
+checks exposed and led to fixes for an empty charging-route counter and
+energy-infeasible incident admission; tests were not weakened to hide them.
+
+This remains an in-memory demo: public controls/HITL have no authentication,
+restart clears the run/budget, and the conservative validator cannot guarantee
+deadlock freedom or plan usefulness. Free provider availability and hosted
+capacity still require operational verification.

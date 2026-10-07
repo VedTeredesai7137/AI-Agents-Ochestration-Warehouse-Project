@@ -117,7 +117,7 @@ function recordView(r) {
     else if (usedFallback) {status='FALLBACK USED';tint='fallback';}
     const planEvents=events.filter(e=>!e.plan_id || e.plan_id === planId);
     return {...r, s, events, planEvents, planId, status, tint, usedFallback,
-        kind:s.crisis_kind || start?.crisis_kind || (created?'STRUCTURAL_COLLAPSE':'TYPE NOT RETAINED'),
+        kind:s.crisis_kind || start?.crisis_kind || created?.crisis_kind || (created?'STRUCTURAL_COLLAPSE':'TYPE NOT RETAINED'),
         affected:list(s.affected_robots ?? created?.affected ?? start?.affected),
         coords:cells(s.crisis_location ?? created?.crisis_location),
         step:created?.step ?? start?.step ?? events[0]?.step,
@@ -139,7 +139,9 @@ function renderHeader() {
     if (!s || !o) return;
     text('run-id',s.run_id);$('run-id').title=s.run_id;
     text('seed',s.seed);text('header-step',s.current_step);
-    text('model-name',desk.events.filter(e=>e.model && e.event_type.startsWith('LLM_')).at(-1)?.model || 'Awaiting model event');
+    text('model-name',o.model || desk.events.filter(e=>e.model && e.event_type.startsWith('LLM_')).at(-1)?.model || 'Awaiting model event');
+    text('provider-name',(o.llm_provider || 'configured LLM').toUpperCase());
+    text('budget-summary',number(s.crisis_budget)?`BUDGET ${s.crises_submitted} / ${s.crisis_budget} · ${s.crises_completed} terminal · ${s.crises_remaining} remaining`:'Run budget not retained');
     tone('model-name','ai');text('simulation-state',s.simulation_complete?'COMPLETE':s.running?'RUNNING':'PAUSED');
     tone('simulation-state',s.simulation_complete?'success':'quiet');
     text('kpi-active',o.active ? shortId(o.crisis_id) : 'NONE');text('active-kind',o.active ? o.crisis_kind : 'system nominal');tone('metric-active',o.active?'crisis':'quiet');
@@ -198,10 +200,12 @@ function renderIncident() {
 function renderPlan(v) {
     const s=v?.s || {}, response=v?.response, request=v?.request;
     html('model-detail',pairs([
-        ['Model',v?.model || 'Not observed'],['Request',request?clock(request.timestamp):'No retained request'],
+        ['Provider',response?.provider || request?.provider || s.llm_provider || 'Not observed'],
+        ['Model',v?.model || s.model || 'Not observed'],['Request',request?clock(request.timestamp):'No retained request'],
         ['Response',response?`${response.event_type==='LLM_SUCCESS'?'SCHEMA VALID':'FAILED'} · ${clock(response.timestamp)}`:request && v.active?'IN FLIGHT':'Not retained'],
-        ['Latency',duration(response?.latency_ms)]
-    ])+(response?.error_code?`<p class="meta" data-tone="error">${esc(response.error_code)}</p>`:''));
+        ['HTTP status',response?.http_status ?? s.http_status ?? 'No HTTP receipt'],
+        ['Latency',duration(response?.latency_ms ?? s.llm_latency_ms)]
+    ])+(response?.error_code?`<p class="meta" data-tone="error">${esc(response.failure_type || response.error_code)} · ${esc(response.provider_error || response.reason || '')}</p>`:''));
     text('parse-state',v?.parsed?'PARSED':response?.error_code || 'AWAITING');tone('parse-state',v?.parsed?'success':response?'error':'quiet');
     const actions=list(s.proposed_plan?.actions).filter(a=>a && typeof a==='object');
     html('plan-detail',actions.length?`<p class="meta" title="${esc(v.planId)}">${esc(shortId(v.planId))} · ${actions.length} executable proposals</p>`+actions.map(a=>{
@@ -218,7 +222,8 @@ function renderPlan(v) {
     const errors=validated?issues.filter(i=>i.level==='ERROR').length:v?.validation?.errors;
     const warnings=validated?issues.filter(i=>i.level==='WARNING').length:v?.validation?.warnings;
     const schemaFailed=['LLM_INVALID_JSON','LLM_SCHEMA_ERROR'].includes(response?.error_code);
-    const label=schemaFailed?'SCHEMA REJECTED':status==='VALID'?'PASS':status==='INVALID'?'REJECTED':'NOT YET VALIDATED';
+    const transportFailed=['LLM_UNAVAILABLE','LLM_TIMEOUT','LLM_INTERNAL_ERROR'].includes(response?.error_code);
+    const label=transportFailed?'NO PLAN / MODEL FAILURE':schemaFailed?'SCHEMA REJECTED':status==='VALID'?'PASS':status==='INVALID'?'REJECTED':'NOT YET VALIDATED';
     html('validation-detail',`<div class="validation-head"><strong data-tone="${status==='VALID'?'success':status==='INVALID'?'error':'quiet'}">${label}</strong><span>${score(value)} / 1.00</span></div><p class="meta">Execution readiness, not model confidence. Errors prevent execution.</p><p class="meta">${esc(errors ?? '—')} errors · ${esc(warnings ?? '—')} warnings</p>`+
         issues.map(i=>`<div class="issue" data-tone="${i.level==='ERROR'?'error':'warning'}"><b>${esc(i.level)} · ${esc(i.code)}${i.robot_id!=null?' · R'+esc(i.robot_id):''}</b><p>${esc(i.message)}</p></div>`).join('')+
         (!issues.length && list(v?.validation?.codes).length?`<p class="meta">${esc(v.validation.codes.join(' · '))}</p>`:'')+
@@ -279,7 +284,7 @@ function renderMap(v) {
     html('robot-layer',desk.robots.map(r=>`<g class="robot ${affected.includes(r.id)?'affected':'unrelated'} ${r.id===desk.robot?'selected':''}" transform="translate(${r.position.x*20},${r.position.y*20})" data-robot="${r.id}" role="button" tabindex="0" aria-label="Robot ${r.id}, ${esc(r.status)}${affected.includes(r.id)?', affected':''}"><title>R${r.id} · ${esc(r.status)} · ${esc(r.battery)}%</title><rect x="2" y="2" width="16" height="16" rx="2"/><text x="10" y="14">${r.id}</text></g>`).join(''));
 }
 function traceDetail(e) {
-    return [e.model, e.action, e.latency_ms!=null?`${e.latency_ms}ms`:null,
+    return [e.provider,e.model,e.http_status!=null?`HTTP ${e.http_status}`:null,e.failure_type,e.provider_error,e.action,e.latency_ms!=null?`${e.latency_ms}ms`:null,
         e.validation_score!=null?`score=${e.validation_score}`:null,e.actions!=null?`actions=${e.actions}`:null,
         e.errors!=null?`errors=${e.errors}`:null,e.warnings!=null?`warnings=${e.warnings}`:null,
         e.attempt!=null?`attempt=${e.attempt}`:null,e.duration_ms!=null?`duration=${duration(e.duration_ms)}`:null,
@@ -330,11 +335,11 @@ async function poll() {
 function notify(message) {text('notice',message);$('notice').hidden=!message;}
 async function control(action) {
     if(desk.busy || desk.failure || !desk.lastGood || Date.now()-desk.lastGood>4000)return;
-    if(['reset','crisis'].includes(action) && !window.confirm(action==='reset'?'Reset this run and cancel active orchestration?':'Inject an aisle collapse into the current simulation?'))return;
+    if(['reset','crisis'].includes(action) && !window.confirm(action==='reset'?'Reset this run and cancel active orchestration?':'Inject this incident? It consumes one slot from the shared run budget.'))return;
     desk.busy=true;freshness();
     try {
-        await api(`/simulation/${action}`,{});
-        console.info('[UI][CONTROL]',action);notify(action==='crisis'?'Collapse submitted. Follow the incident timeline.':`Simulation ${action} accepted.`);
+        await api(`/simulation/${action}`,action==='crisis'?{kind:$('crisis-kind').value}:{});
+        console.info('[UI][CONTROL]',action);notify(action==='crisis'?'Incident submitted. Queued effects wait for activation.':`Simulation ${action} accepted.`);
         if(action==='reset') {desk.epoch++;desk.gridKey=null;desk.lastGood=0;desk.orchestrator=null;}
     } catch(error) {notify(error.message);}
     finally {desk.busy=false;await poll();freshness();}

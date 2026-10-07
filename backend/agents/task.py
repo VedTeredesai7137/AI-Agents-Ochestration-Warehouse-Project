@@ -150,7 +150,7 @@ class TaskAgent:
         robot = None
         for proposal in self.received_proposals:
             candidate = robot_manager.get_robot(proposal["robot_id"])
-            if (candidate is None or candidate.battery < 30
+            if (candidate is None or candidate.fault_reason or candidate.battery < 30
                     or (not is_emergency and candidate.current_task is not None)
                     or candidate.status in (RobotStatus.CHARGING, RobotStatus.NEEDS_CHARGE, RobotStatus.NEGOTIATING)
                     or candidate.orchestration_holds or candidate.hold_steps_remaining or candidate.yield_steps_remaining):

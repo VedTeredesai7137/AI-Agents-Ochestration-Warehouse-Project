@@ -3,12 +3,12 @@
 <head>
  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
  <title>Crisis + Orchestration | Warehouse Swarm</title>
- <link rel="stylesheet" href="{{ url_for('static', path='css/CrisisOrchestration.css') }}?v=1">
+ <link rel="stylesheet" href="{{ url_for('static', path='css/CrisisOrchestration.css') }}?v=crisis-budget-2">
 </head>
 <body>
 <header class="command-header">
  <div class="app-name">SwarmOS</div>
- <nav aria-label="Operations pages"><a href="/OperationCenter"><span class="nav-index">01</span><span class="nav-label">Operations</span></a><a href="/CrisisOrchestration" aria-current="page"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a><a href="/AgentAnalytics"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a><a href="/dashboard"><span class="nav-index">04</span><span class="nav-label">Dashboard</span></a></nav>
+ <nav aria-label="Operations pages"><a href="/OperationCenter"><span class="nav-index">01</span><span class="nav-label">Operations</span></a><a href="/CrisisOrchestration" aria-current="page"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a><a href="/AgentAnalytics"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a><a href="/dashboard"><span class="nav-index">04</span><span class="nav-label">Dashboard</span></a><a href="/SystemOverview"><span class="nav-index">05</span><span class="nav-label">Overview</span></a></nav>
  <span class="header-spacer" aria-hidden="true"></span>
 </header>
 <div class="command-row">
@@ -28,7 +28,7 @@
 <main class="crisis-workspace">
  <aside class="timeline-panel panel" aria-labelledby="timeline-title">
   <div class="panel-heading"><h2 id="timeline-title">01 / INCIDENTS</h2><span id="incident-count" class="muted">0</span></div>
-  <div class="timeline-tools"><button id="follow-active" aria-pressed="true">Follow active</button><button id="inject-crisis">Inject collapse</button></div>
+  <div class="timeline-tools"><button id="follow-active" aria-pressed="true">Follow active</button><select id="crisis-kind" aria-label="Manual incident type"><option value="STRUCTURAL_COLLAPSE">Aisle obstruction</option><option value="ROBOT_IMMOBILIZED">Robot immobilization</option><option value="CHARGER_OUTAGE">Charger outage</option><option value="CRITICAL_TASK">Urgent order</option></select><button id="inject-crisis">Inject incident</button><span id="budget-summary" class="muted">Awaiting run budget</span></div>
   <div id="timeline" class="scroll-region" aria-label="Select a crisis"></div>
   <p class="panel-footnote">Current run · bounded event history.<br>Queued incidents never pin robots.</p>
  </aside>
@@ -44,7 +44,7 @@
   <div class="map-legend"><span><i class="key-crisis"></i> Incident cells</span><span><i class="key-affected"></i> Affected</span><span><i class="key-route"></i> Selected route</span><span><i class="key-charge"></i> Charger</span><span class="muted">Unrelated fleet muted</span></div>
  </section>
  <aside class="plan-panel panel" aria-labelledby="plan-title">
-  <div class="panel-heading"><h2 id="plan-title">03 / PLAN + SAFETY</h2><span class="violet">LOCAL OLLAMA</span></div>
+  <div class="panel-heading"><h2 id="plan-title">03 / PLAN + SAFETY</h2><span id="provider-name" class="violet">CONFIGURED LLM</span></div>
   <div class="scroll-region plan-scroll">
    <section class="detail-section"><h3>MODEL REQUEST</h3><div id="model-detail"></div></section>
    <section class="detail-section"><h3>STRUCTURED PLAN <span id="parse-state"></span></h3><div id="plan-detail"></div></section>
@@ -60,6 +60,6 @@
  <section class="outcome-panel panel" aria-labelledby="outcome-title"><div class="panel-heading"><h2 id="outcome-title">RECENT OUTCOMES</h2><span class="muted">current run</span></div><div id="outcomes" class="scroll-region"></div></section>
 </main>
 <footer><span>LOCAL-FIRST / CNP / A* / LANGGRAPH / HITL</span><span id="freshness">Awaiting telemetry</span><span>Plans are proposals. ACTION_OK is execution evidence.</span></footer>
-<script src="{{ url_for('static', path='js/CrisisOrchestration.js') }}?v=1"></script>
+<script src="{{ url_for('static', path='js/CrisisOrchestration.js') }}?v=crisis-budget-2"></script>
 </body>
 </html>

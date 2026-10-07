@@ -111,6 +111,12 @@ class ActionExecutor:
                     continue
                 start = (robot.position.x, robot.position.y)
                 task = engine.task_manager.get_task(robot.current_task)
+                if robot.fault_reason or trace.get("crisis_kind") == "CRITICAL_TASK":
+                    if task and not task.completed:
+                        engine.task_manager.release_task(robot, engine.agent_manager.message_bus,
+                            "robot_immobilized" if robot.fault_reason else "urgent_order_recovery")
+                    robot.hold_steps_remaining = 1
+                    continue
                 destination = ((task.delivery_x, task.delivery_y) if robot.carrying_item else
                                (task.pickup_x, task.pickup_y)) if task and not task.completed else None
                 robot.route_waypoint = None

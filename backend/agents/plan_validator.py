@@ -90,6 +90,8 @@ class PlanValidator:
                 issue("ERROR", "INVALID_BATTERY", "Battery is outside 0..100", rid,
                       "battery_feasibility_ratio")
             kind = action.action
+            if robot.fault_reason and kind in (ActionType.REROUTE, ActionType.GO_TO_CHARGER):
+                issue("ERROR", "ROBOT_IMMOBILIZED", "An immobilized robot cannot execute movement", rid)
             if kind == ActionType.HOLD:
                 if action.hold_steps > self.settings.max_hold_steps:
                     issue("ERROR", "HOLD_OUT_OF_RANGE", "Hold exceeds configured maximum", rid)
@@ -211,7 +213,7 @@ class PlanValidator:
                 delay = self.settings.shadow_horizon
             elif not action:
                 delay = max(robot.hold_steps_remaining, robot.yield_steps_remaining)
-                if robot.orchestration_holds:
+                if robot.orchestration_holds or robot.fault_reason:
                     delay = self.settings.shadow_horizon
             route = [tuple(p) for p in route] if route else [pos]
             if route[0] != pos or not pathfinder._validate_path_integrity(route):

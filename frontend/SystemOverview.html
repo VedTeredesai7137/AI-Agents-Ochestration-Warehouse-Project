@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>System Overview | SwarmOS</title>
+ <link rel="stylesheet" href="{{ url_for('static', path='css/SystemOverview.css') }}?v=1">
+</head>
+<body>
+<header class="command-header">
+ <a class="app-name" href="/OperationCenter">SwarmOS</a>
+ <nav aria-label="Operations pages"><a href="/OperationCenter"><span>01</span>Operations</a><a href="/CrisisOrchestration"><span>02</span>Crisis</a><a href="/AgentAnalytics"><span>03</span>Analytics</a><a href="/dashboard"><span>04</span>Dashboard</a><a href="/SystemOverview" aria-current="page"><span>05</span>Overview</a></nav>
+ <span class="header-spacer" aria-hidden="true"></span>
+</header>
+<div class="run-strip"><span>SYSTEM FIELD GUIDE</span><div class="run-values"><span>RUN <b id="run-id">—</b></span><span>STEP <b id="step">—</b></span><span id="sim-state">CONNECTING</span><span id="connection" role="status">API CONNECTING</span></div></div>
+<main id="story-scroll" tabindex="0">
+ <section class="opening" aria-labelledby="overview-title">
+  <div><p class="eyebrow">01 / THE COORDINATION PROBLEM</p><h1 id="overview-title">One warehouse. Many independent decisions.</h1><p>Robots compete for tasks, aisle space and charging bays. A route can be valid in isolation and blocked in a working fleet. SwarmOS makes that coordination visible, then shows exactly where exceptional AI decisions enter the system.</p></div>
+  <div class="run-facts" aria-label="Current run facts"><div><strong id="fleet-size">—</strong><span>RobotAgents</span></div><div><strong id="task-total">—</strong><span>current tasks</span></div><div><strong id="type-total">—</strong><span>incident types</span></div><div><strong id="budget-total">—</strong><span>run budget</span></div></div>
+ </section>
+ <div class="story-grid">
+  <section class="architecture panel" aria-labelledby="architecture-title">
+   <div class="section-heading"><h2 id="architecture-title">02 / HOW THE SWARM WORKS</h2><span>DETERMINISTIC EVERY TICK</span></div>
+   <div class="routine-flow" aria-label="Routine task and movement architecture">
+    <div class="flow-node"><small>DEMAND</small><strong>TaskAgents</strong><p>Each task owns its auction.</p></div><span class="arrow" aria-hidden="true">→</span>
+    <div class="flow-node coordination"><small>COMMUNICATION</small><strong>MessageBus / CNP</strong><p>CFP → proposals → award</p></div><span class="arrow" aria-hidden="true">↔</span>
+    <div class="flow-node"><small>EXECUTION</small><strong>RobotAgents</strong><p>Perceive · decide · act</p></div>
+   </div>
+   <div class="fleet-signature" aria-hidden="true"><div id="agent-marks"></div><span>Independent agents<br>shared physical constraints</span></div>
+   <div class="movement-flow" aria-label="Movement safety chain"><div><b>A*</b><span>Walkable, orthogonal paths</span></div><span class="arrow" aria-hidden="true">→</span><div><b>CollisionManager</b><span>One occupied cell per robot</span></div><span class="arrow" aria-hidden="true">→</span><div><b>Warehouse</b><span>Move one cell; spend energy</span></div></div>
+   <div class="support-rail"><span>ChargingManager <b>reachable bays + energy reserve</b></span><span>Engine <b>TaskAgents tick before RobotAgents</b></span></div>
+   <div class="section-heading exceptional-heading"><h2>03 / EXCEPTIONAL RECOVERY</h2><span>ONE ASYNCHRONOUS GRAPH WORKER</span></div>
+   <ol class="recovery-flow" aria-label="Orchestration lifecycle">
+    <li><small>01</small><b>Crisis</b><span>Budget + bounded queue</span></li>
+    <li class="ai"><small>02</small><b>Diagnose</b><span>Affected state snapshot</span></li>
+    <li class="ai"><small>03</small><b>Generate plan</b><span>Configured LLM</span></li>
+    <li><small>04</small><b>Parse</b><span>Strict Pydantic actions</span></li>
+    <li class="safety"><small>05 / SAFETY GATE</small><b>Validate</b><span>Paths · energy · ownership</span></li>
+    <li><small>06</small><b>Execute</b><span>Existing deterministic services</span></li>
+   </ol>
+   <div class="branch-diagram"><div><b class="amber">VALID + RISK / WARNINGS</b><span>Operator review → approve → live revalidation<br>Reject → different plan → validate again</span></div><div><b class="orange">INVALID / TIMEOUT / UNAVAILABLE</b><span>Bounded regeneration or deterministic fallback<br>Cleanup → next queued incident</span></div></div>
+   <p class="architecture-note">The model proposes actions. It never receives a movement API or mutable world objects. A parsed response is still a proposal until the validator and executor accept it.</p>
+  </section>
+  <aside class="safety-panel panel" aria-labelledby="safety-title">
+   <div class="section-heading"><h2 id="safety-title">04 / WHY USE AI HERE?</h2></div>
+   <p>Routine traffic needs predictable, fast rules. Exceptional recovery can have several plausible strategies: wait, yield, take a detour, re-auction work or change charging plans.</p>
+   <div class="responsibility"><b>FAST LAYER</b><span>CNP, A*, collision reservations, battery policy and deterministic recovery run without an LLM.</span></div>
+   <div class="responsibility ai"><b>SLOW LAYER</b><span>LangGraph asks the configured model for structured actions only for an exceptional incident. Unrelated agents keep operating.</span></div>
+   <h3>THE SAFETY CONTRACT</h3>
+   <ol class="safety-contract"><li><b>Schema</b><span>Five supported actions. Unknown fields and missing parameters are rejected.</span></li><li><b>World validation</b><span>Reachability, battery, ownership and short-horizon path conflicts are checked without mutating the warehouse.</span></li><li><b>Human review</b><span>Valid plans with warnings or a score below the policy threshold pause before execution.</span></li><li><b>Live execution check</b><span>Stale ownership or new risks stop execution. Prepared actions commit under the simulation lock.</span></li></ol>
+   <div class="provider-readout"><small>CURRENT CONFIGURED INFERENCE</small><strong id="model-name">Awaiting API</strong><span id="provider-state">No model request observed</span><p id="provider-error"></p></div>
+   <p class="smallprint">OpenRouter is an explicit provider alternative to local Gemma/Mistral. Availability is observed through request events; configuration alone does not prove successful inference.</p>
+  </aside>
+  <section class="playbook panel" aria-labelledby="playbook-title"><div class="section-heading"><h2 id="playbook-title">05 / INCIDENT PLAYBOOK</h2><span id="budget-state">Awaiting run budget</span></div>
+   <div class="incident-catalog"><article><b>Structural collapse</b><p>Obstruct an eligible aisle. A* replans immediately; task and charger access stay protected.</p></article><article><b>Persistent deadlock</b><p>Escalate a reciprocal pair only after deterministic recovery and six further failed-movement ticks.</p></article><article><b>Robot immobilization</b><p>Temporarily disable movement and bidding. Reassign safely through CNP, then clear the fault at completion.</p></article><article><b>Charger outage</b><p>Take an unoccupied bay out of service, replan charging traffic, then restore the bay.</p></article><article><b>Urgent-order disruption</b><p>Promote an owned order to CRITICAL. A release re-enters the existing emergency CNP flow.</p></article></div>
+   <p class="smallprint">Manual, automatic and escalated incidents consume the same run budget. A manual request postpones the next automatic event. Queued incidents have no physical effect and do not pin robots. A run may finish before using every slot.</p>
+  </section>
+  <section class="actions-panel panel" aria-labelledby="actions-title"><div class="section-heading"><h2 id="actions-title">EXECUTABLE ACTIONS</h2><span>STRICT INTERFACE</span></div><dl class="action-list"><dt>HOLD</dt><dd>Stationary for a bounded number of ticks</dd><dt>YIELD</dt><dd>Temporary wait; target receives priority</dd><dt>REROUTE</dt><dd>A* through a validated waypoint</dd><dt>REASSIGN_TASK</dt><dd>Safe release → fresh CNP auction</dd><dt>GO_TO_CHARGER</dt><dd>Reachable bay via ChargingManager</dd></dl><p class="smallprint">Validation score measures execution readiness, never model confidence. The shadow horizon screens obvious conflicts; it does not prove deadlock freedom.</p></section>
+ </div>
+ <section class="evidence-panel" aria-labelledby="evidence-title"><h2 id="evidence-title">06 / FOLLOW THE EVIDENCE</h2><div><a href="/OperationCenter"><small>OPERATIONS</small><b>What is happening?</b><span>Floor, task progress, battery and traffic</span></a><a href="/CrisisOrchestration"><small>CRISIS DESK</small><b>What did the AI do?</b><span>Request → parse → validate → ACTION_OK</span></a><a href="/AgentAnalytics"><small>AGENT ANALYTICS</small><b>Why is this robot doing that?</b><span>Ownership, routes and real event traces</span></a></div><p>No fabricated business metrics or model reasoning. Run IDs, crisis IDs, plan IDs and structured events make behavior reviewable.</p></section>
+</main>
+<footer><span>SINGLE PROCESS / IN-MEMORY STATE / REST POLLING</span><span id="freshness">Awaiting telemetry</span><span>Architecture guide · current implementation</span></footer>
+<script src="{{ url_for('static', path='js/SystemOverview.js') }}?v=1"></script>
+</body></html>

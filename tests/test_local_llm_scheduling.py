@@ -243,7 +243,7 @@ def test_periodic_collapse_backpressure_keeps_grid_unchanged(engine_factory):
         client.release.set()
 
 
-def test_queued_collapse_replans_immediately(engine_factory):
+def test_queued_collapse_waits_then_replans_at_activation(engine_factory):
     client = SlowLLMClient()
     e = engine_factory(client)
     r, _ = assign(e, 2, pickup=(5, 2), delivery=(6, 2))
@@ -253,6 +253,11 @@ def test_queued_collapse_replans_immediately(engine_factory):
         assert client.entered.wait(2)
         crisis = e.trigger_warehouse_crisis([(5, 4)])
         assert crisis is not None and not r.orchestration_holds
+        assert e.pathfinder.warehouse.grid[4][5] == "."
+        assert (5, 4) in r.path  # Queued physical effects have not happened yet.
+        client.release.set()
+        wait_for(e, lambda s: not s["active"] and s["crisis_id"] == crisis)
+        assert e.pathfinder.warehouse.grid[4][5] == "S"
         assert (5, 4) not in r.path
         assert e.pathfinder._validate_path_integrity(r.path)
         e.step()

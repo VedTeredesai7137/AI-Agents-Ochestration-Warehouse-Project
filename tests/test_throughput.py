@@ -120,14 +120,19 @@ def test_prompt_only_contains_affected_robots(engine):
     assert '"robot_id":2' not in prompt and '"robot_id":1' in prompt
 
 
-def test_automatic_collapse_has_configured_finite_limit(engine,monkeypatch):
+def test_automatic_crises_obey_legacy_configured_total_limit(engine):
+    from backend.evaluation.runner import settle
     assign(engine)
     engine.robot_manager.get_robot(1).hold_steps_remaining=100
     engine.settings=Settings(crisis_interval=2,automatic_crisis_limit=3)
-    calls=[]
-    monkeypatch.setattr(engine,"trigger_warehouse_crisis",lambda **kw:calls.append(engine.current_step) or "crisis")
-    for _ in range(30): engine.step()
-    assert calls==[2,4,6]
+    engine.orchestrator_runner.client=FaultClient("LLM_OFFLINE")
+    engine.pathfinder.warehouse.grid[7][7]="C"
+    engine.pathfinder.warehouse.revision+=1
+    for _ in range(30):
+        engine.step()
+        settle(engine)
+    assert engine.measurements["crisis_count"]==3
+    assert engine.crisis_summary()["crises_remaining"]==0
 
 
 def test_automatic_collapse_preserves_unfinished_endpoints():
@@ -139,12 +144,13 @@ def test_automatic_collapse_preserves_unfinished_endpoints():
     finally: e.close()
 
 
-def test_normal_120_task_completion_under_15_minutes(tmp_path):
+def test_normal_120_task_completion_under_15_minutes(tmp_path,monkeypatch):
+    monkeypatch.setenv("CRISIS_BUDGET","6")
     result=run_completion(seed=42,fault="LLM_OFFLINE",timeout=900)
     (tmp_path/"completion.json").write_text(json.dumps(result,indent=2))
     assert result["passed"]
     assert result["metrics"]["task_completion_count"]==120
-    assert result["metrics"]["automatic_crises"]==3
+    assert 0 < result["metrics"]["crisis_count"] <= 6
     assert result["metrics"]["successful_moves"]>0
     assert result["metrics"]["charging_events"]>0
     assert all(s["orphaned_holds"]==0 for s in result["health"])

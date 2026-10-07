@@ -28,6 +28,7 @@ from backend.agents.task_orchestrator import TaskAgentManager
 from backend.agents.negotiation import NegotiationService
 from backend.simulation.factory import create_simulation
 from backend.core.settings import Settings
+from backend.agents.orchestrator_graph import CrisisKind
 import logging
 
 class HealthLogFilter(logging.Filter):
@@ -189,6 +190,11 @@ def agent_analytics(request: Request):
     return templates.TemplateResponse(request=request, name="AgentAnalytics.html")
 
 
+@app.get("/SystemOverview")
+def system_overview(request: Request):
+    return templates.TemplateResponse(request=request, name="SystemOverview.html")
+
+
 @app.get("/warehouse/grid")
 @snapshot_response
 def get_warehouse_grid():
@@ -227,6 +233,7 @@ def get_robots():
             "hold_steps_remaining": robot.hold_steps_remaining,
             "yield_to_robot_id": robot.yield_to_robot_id,
             "orchestration_held": bool(robot.orchestration_holds),
+            "fault_reason": robot.fault_reason,
             "path": [[p[0], p[1]] for p in robot.path] if robot.path else []
         }
         for robot in robot_manager.robots
@@ -432,7 +439,8 @@ def get_simulation_status():
         "simulation_complete": simulation.is_complete(),
         "running": simulation_running,
         "total_strikes": total_strikes,
-        "orchestrator_active": simulation.orchestrator_active
+        "orchestrator_active": simulation.orchestrator_active,
+        **simulation.crisis_summary()
     }
 
 
@@ -509,7 +517,7 @@ class OrchestratorOverrideRequest(BaseModel):
 @snapshot_response
 def get_orchestrator_state():
     """Return the current LangGraph orchestrator state for frontend HUD."""
-    return simulation.orchestrator_runner.get_state()
+    return {**simulation.orchestrator_runner.get_state(), **simulation.crisis_summary()}
 
 
 @app.post("/orchestrator/override")
@@ -524,18 +532,25 @@ def post_orchestrator_override(request: OrchestratorOverrideRequest):
 
 class CrisisCreateRequest(BaseModel):
     coords: list[tuple[int, int]] | None = Field(default=None, min_length=1, max_length=10)
+    kind: CrisisKind = CrisisKind.STRUCTURAL_COLLAPSE
+    robot_ids: list[int] | None = Field(default=None, min_length=1, max_length=2)
+    task_id: int | None = Field(default=None, ge=1)
 
 
 @app.post("/simulation/crisis")
 def post_crisis(request: CrisisCreateRequest | None = None):
     with simulation_lock:
         try:
-            crisis_id = simulation.trigger_warehouse_crisis(request.coords if request else None)
+            request = request or CrisisCreateRequest()
+            pair = tuple(sorted(set(request.robot_ids or [])))
+            episode = simulation._deadlock_pairs.get(pair, {})
+            crisis_id = simulation.trigger_crisis(request.kind, coords=request.coords,
+                            robot_ids=request.robot_ids, task_id=request.task_id, episode_id=episode.get("id"))
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         if crisis_id is None:
-            raise HTTPException(409, "No eligible cells remain for collapse")
-        return {"success": True, "crisis_id": crisis_id}
+            raise HTTPException(409, "Crisis budget exhausted, queue at capacity, or no eligible incident")
+        return {"success": True, "crisis_id": crisis_id, **simulation.crisis_summary()}
 
 
 @app.get("/orchestrator/events")

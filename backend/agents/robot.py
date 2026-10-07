@@ -151,7 +151,7 @@ class RobotAgent:
         is_emergency = msg.message_type == MessageType.EMERGENCY_CFP
 
         # Control actions also exclude this robot from new CNP work.
-        if robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
+        if robot.fault_reason or robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
             return
         # Eligibility check
         if not is_emergency and robot.current_task is not None:
@@ -299,7 +299,7 @@ class RobotAgent:
         b = self.beliefs
         robot = self.robot
 
-        if robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
+        if robot.fault_reason or robot.orchestration_holds or robot.hold_steps_remaining or robot.yield_steps_remaining:
             return "hold"
         if robot.status == RobotStatus.NEGOTIATING:
             return "negotiating"

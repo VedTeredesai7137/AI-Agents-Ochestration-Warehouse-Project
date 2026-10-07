@@ -15,6 +15,7 @@ Responsibilities:
 
 from backend.core.models import RobotStatus
 from collections import Counter
+from copy import deepcopy
 from random import Random
 import time
 import threading
@@ -22,7 +23,9 @@ import uuid
 
 from backend.core.events import EventRecorder, logger
 from backend.core.settings import Settings
-from backend.agents.orchestrator_graph import CrisisKind, OrchestratorRunner
+from backend.agents.orchestrator_graph import CrisisKind, CrisisRequest, OrchestratorRunner
+from backend.simulation.pathfinder import AStarPathfinder
+from backend.simulation.charging import ChargingManager
 
 
 class SimulationEngine:
@@ -75,6 +78,9 @@ class SimulationEngine:
         self._recoveries = set()
         self._deadlock_pairs = {}
         self._episode_sequence = 0
+        self._incidents = {}  # Bounded by the configured run budget, not tick count.
+        self._next_crisis_step = self.settings.crisis_interval
+        self._automatic_sequence_index = 0
 
     # ------------------------------------------------------------------
     # Orchestrator observability
@@ -248,11 +254,21 @@ class SimulationEngine:
         self.current_step += 1
 
         logger.debug("[SIM] step=%s run_id=%s", self.current_step, self.run_id)
+        if self._next_crisis_step <= 0:
+            self._next_crisis_step = self.settings.crisis_interval
         
-        if (self.settings.crisis_interval and self.current_step % self.settings.crisis_interval == 0
-                and self.measurements["automatic_crises"] < self.settings.automatic_crisis_limit and not self.is_complete()):
-            if self.trigger_warehouse_crisis(periodic=True):
-                self.measurements["automatic_crises"] += 1
+        if (self.settings.crisis_interval and self.current_step >= self._next_crisis_step
+                and self.measurements["crisis_count"] < self.settings.effective_crisis_budget and not self.is_complete()):
+            self._next_crisis_step = self.current_step + self.settings.crisis_interval
+            sequence = (CrisisKind.STRUCTURAL_COLLAPSE, CrisisKind.ROBOT_IMMOBILIZED,
+                        CrisisKind.CHARGER_OUTAGE, CrisisKind.CRITICAL_TASK)
+            kind = sequence[self._automatic_sequence_index % len(sequence)]
+            self._automatic_sequence_index += 1
+            try:
+                self.trigger_crisis(kind, periodic=True)
+            except ValueError as error:
+                self.events.emit("PERIODIC_SKIPPED", tag="CRISIS", step=self.current_step,
+                                 reason="NO_ELIGIBLE_INCIDENT", detail=str(error))
 
         self.collision_manager.reset_step(self.robot_manager.robots)
 
@@ -513,8 +529,8 @@ class SimulationEngine:
                 if self.settings.orchestrator_enabled:
                     self.events.emit("DEADLOCK_PERSISTENT", tag="SIM", step=self.current_step,
                                      pair=pair, persistent_ticks=episode["persistent_ticks"])
-                    self.orchestrator_runner.invoke_async([], list(pair), kind=CrisisKind.DEADLOCK,
-                                                          episode_id=episode["id"])
+                    self.trigger_crisis(CrisisKind.DEADLOCK, robot_ids=list(pair),
+                                        episode_id=episode["id"], source="natural")
 
     def health_snapshot(self):
         with self.lock:
@@ -574,14 +590,235 @@ class SimulationEngine:
                     pending.append(cell)
         return protected <= seen and all(c in seen for c in self.charging_manager.stations(self.pathfinder))
 
-    def trigger_warehouse_crisis(self, coords=None, *, periodic=False):
+    def crisis_summary(self):
         with self.lock:
-            scheduling = self.orchestrator_runner.scheduling_state()
-            if periodic and (scheduling["structural_pending"] or scheduling["queue_full"]):
-                self.events.emit("PERIODIC_SKIPPED", tag="CRISIS", step=self.current_step,
-                                 reason="ORCHESTRATOR_BACKPRESSURE", active=scheduling["active"],
-                                 queued=scheduling["queued_crises"])
+            used = self.measurements["crisis_count"]
+            return dict(crisis_budget=self.settings.effective_crisis_budget, crises_submitted=used,
+                        crises_completed=self.measurements["crises_completed"],
+                        crises_remaining=max(0, self.settings.effective_crisis_budget-used),
+                        next_automatic_crisis_step=self._next_crisis_step if self.settings.crisis_interval else None,
+                        crisis_types=[kind.value for kind in CrisisKind],
+                        incidents=[dict(record) for record in self._incidents.values()])
+
+    def trigger_warehouse_crisis(self, coords=None, *, periodic=False):
+        """Compatibility entry point; all injected crises share one run budget."""
+        return self.trigger_crisis(CrisisKind.STRUCTURAL_COLLAPSE, coords=coords, periodic=periodic)
+
+    def trigger_crisis(self, kind=CrisisKind.STRUCTURAL_COLLAPSE, *, coords=None, robot_ids=None,
+                       task_id=None, periodic=False, episode_id=None, source=None):
+        with self.lock:
+            kind = CrisisKind(kind)
+            if self.closed:
                 return None
+            if coords is not None and kind != CrisisKind.STRUCTURAL_COLLAPSE:
+                raise ValueError("Coordinates are supported only for structural collapse")
+            if task_id is not None and kind != CrisisKind.CRITICAL_TASK:
+                raise ValueError("task_id is supported only for urgent-order disruption")
+            source = source or ("automatic" if periodic else "manual")
+            scheduling = self.orchestrator_runner.scheduling_state()
+            if self.measurements["crisis_count"] >= self.settings.effective_crisis_budget:
+                self.events.emit("CRISIS_BUDGET_EXHAUSTED", tag="CRISIS", step=self.current_step,
+                                 budget=self.settings.effective_crisis_budget)
+                return None
+            if (periodic and (scheduling["active"] or scheduling["queued_crises"])) or scheduling["queue_full"]:
+                self.events.emit("PERIODIC_SKIPPED" if periodic else "BACKPRESSURE", tag="CRISIS",
+                                 step=self.current_step, reason="ORCHESTRATOR_BACKPRESSURE",
+                                 active=scheduling["active"], queued=scheduling["queued_crises"])
+                return None
+            warehouse = self.pathfinder.warehouse
+            affected = sorted(set(robot_ids or []))
+            if any(self.robot_manager.get_robot(rid) is None for rid in affected):
+                raise ValueError("Affected robot does not exist")
+            details = dict(managed=True, source=source)
+            if kind == CrisisKind.DEADLOCK:
+                episode = self._deadlock_pairs.get(tuple(affected), {})
+                if (len(affected) != 2 or not self.deadlock_is_current(tuple(affected), episode_id)
+                        or episode.get("persistent_ticks", 0) < self.settings.deadlock_persistence_steps):
+                    return None
+                coords = []
+            elif kind == CrisisKind.STRUCTURAL_COLLAPSE:
+                # Explicit operator input is checked before consuming a budget slot.
+                if coords is not None:
+                    self._validate_collapse(set(map(tuple, coords)))
+                coords = coords or []
+            elif kind == CrisisKind.CHARGER_OUTAGE:
+                if len(self.charging_manager.stations(self.pathfinder)) < 2:
+                    raise ValueError("Charger outage requires at least two charging bays")
+                if self._outage_bay() is None:
+                    self.events.emit("PERIODIC_SKIPPED" if periodic else "CRISIS_NOT_ELIGIBLE", tag="CRISIS",
+                                     step=self.current_step, reason="NO_ENERGY_SAFE_CHARGER_OUTAGE")
+                    return None
+                coords = []
+            else:
+                candidates = [r for r in self.robot_manager.robots if not r.fault_reason]
+                if kind == CrisisKind.CRITICAL_TASK:
+                    task = self.task_manager.get_task(task_id) if task_id else next(
+                        (t for t in self.task_manager.tasks if not t.completed and t.assigned_robot is not None), None)
+                    if task is None or task.completed or task.assigned_robot is None:
+                        raise ValueError("Urgent disruption requires an owned unfinished task")
+                    affected = [task.assigned_robot]
+                    details["task_id"] = task.id
+                elif not affected:
+                    candidates.sort(key=lambda r: (r.current_task is None, r.id))
+                    affected = [candidates[0].id] if candidates else []
+                if not affected:
+                    return None
+                if len(affected) != 1:
+                    raise ValueError("This incident requires exactly one robot")
+                details["robot_id"] = affected[0]
+                r = self.robot_manager.get_robot(affected[0])
+                coords = [(r.position.x, r.position.y)]
+            if self.settings.orchestrator_enabled:
+                known_ids = set(self._incidents)
+                crisis_id = self.orchestrator_runner.invoke_async(coords, affected, kind=kind,
+                                        episode_id=episode_id, details=details)
+                if crisis_id is None:
+                    return None
+                if crisis_id in known_ids:
+                    return crisis_id  # Pair deduplication never consumes another budget slot.
+            else:
+                crisis_id = f"{self.run_id}:baseline_crisis_{self.measurements['crisis_count']+1:04d}"
+                request = CrisisRequest(crisis_id, coords, affected, self.current_step, kind,
+                                        tuple(affected) if kind == CrisisKind.DEADLOCK else None, episode_id, details)
+                if not self.activate_crisis(request):
+                    return None
+                self.orchestrator_runner.executor.fallback(request.affected, "ORCHESTRATOR_DISABLED",
+                                                         crisis_id=crisis_id, crisis_kind=kind.value)
+                self.finish_crisis(request)
+            self.measurements["crisis_count"] += 1
+            self.measurements["automatic_crises" if periodic else "manual_crises" if source == "manual" else "natural_crises"] += 1
+            if source != "natural":
+                self._next_crisis_step = self.current_step + self.settings.crisis_interval
+            record = self._incidents.setdefault(crisis_id, {})
+            record.update(crisis_id=crisis_id, crisis_kind=kind.value, source=source, detected_step=self.current_step)
+            record.setdefault("status", "QUEUED")
+            self.events.emit("CRISIS_CREATED", tag="CRISIS", step=self.current_step, crisis_id=crisis_id,
+                             crisis_kind=kind.value, source=source, crisis_location=record.get("crisis_location", coords),
+                             affected=record.get("affected", affected), remaining=self.crisis_summary()["crises_remaining"])
+            return crisis_id
+
+    def _validate_collapse(self, cells):
+        warehouse = self.pathfinder.warehouse
+        occupied = {(r.position.x, r.position.y) for r in self.robot_manager.robots}
+        protected = {(t.pickup_x, t.pickup_y) for t in self.task_manager.tasks if not t.completed}
+        protected |= {(t.delivery_x, t.delivery_y) for t in self.task_manager.tasks if not t.completed}
+        if not cells or any(not warehouse.is_walkable(x,y) or (x,y) in occupied | protected or warehouse.grid[y][x] == "C"
+                            for x,y in cells) or not self._collapse_preserves_access(cells, occupied | protected):
+            raise ValueError("Collapse must preserve task/charger access and avoid occupied/protected cells")
+        if not self._change_preserves_energy({cell:"S" for cell in cells}):
+            raise ValueError("Collapse would invalidate an owned task's charging-energy itinerary")
+
+    def _change_preserves_energy(self, changes):
+        """Non-mutating admission preflight using the existing charging itinerary planner."""
+        warehouse = deepcopy(self.pathfinder.warehouse)
+        for (x,y),cell in changes.items():
+            warehouse.grid[y][x] = cell
+        warehouse.revision += 1
+        after_pf, after_charge = AStarPathfinder(warehouse), ChargingManager()
+        for robot in self.robot_manager.robots:
+            task = self.task_manager.get_task(robot.current_task)
+            if not task or task.completed:
+                continue
+            start = (robot.position.x,robot.position.y)
+            goal = (task.delivery_x,task.delivery_y) if robot.carrying_item else (task.pickup_x,task.pickup_y)
+            if robot.carrying_item:
+                before = self.charging_manager.journey(start,goal,robot.battery,self.pathfinder,loaded=True,build_route=False)
+                after = after_charge.journey(start,goal,robot.battery,after_pf,loaded=True,build_route=False)
+            else:
+                before = self.charging_manager.task_offer(robot,task,self.pathfinder)
+                after = after_charge.task_offer(robot,task,after_pf)
+            if before is not None and after is None:
+                return False
+        return True
+
+    def _outage_bay(self):
+        occupied = {(r.position.x,r.position.y) for r in self.robot_manager.robots}
+        stations = self.charging_manager.stations(self.pathfinder)
+        if len(stations) < 2:
+            return None
+        choices = [bay for bay in stations if bay not in occupied]
+        choices.sort(key=lambda c: (-sum(r.status == RobotStatus.CHARGING and bool(r.path) and tuple(r.path[-1]) == c
+                                        for r in self.robot_manager.robots), c))
+        for bay in choices:
+            if all(min(self.charging_manager.distance((r.position.x,r.position.y), c, self.pathfinder)
+                       for c in stations if c != bay) * (2 if r.carrying_item else 1) <= r.battery
+                   for r in self.robot_manager.robots) and self._change_preserves_energy({bay:"."}):
+                return bay
+        return None
+
+    def activate_crisis(self, request):
+        """Called under engine.lock only when queued work reaches the front."""
+        details, kind = request.details, request.kind
+        warehouse = self.pathfinder.warehouse
+        try:
+            if kind == CrisisKind.STRUCTURAL_COLLAPSE:
+                result = self._activate_collapse(request.coords or None)
+                if not result:
+                    return False
+                request.coords, request.affected = result
+            elif kind == CrisisKind.ROBOT_IMMOBILIZED:
+                robot = self.robot_manager.get_robot(details["robot_id"])
+                if not robot or robot.fault_reason:
+                    return False
+                robot.fault_reason = "TEMPORARY_IMMOBILIZATION"
+                request.coords = [(robot.position.x, robot.position.y)]
+            elif kind == CrisisKind.CRITICAL_TASK:
+                task = self.task_manager.get_task(details["task_id"])
+                if not task or task.completed or task.assigned_robot is None:
+                    return False
+                task.priority = "CRITICAL"
+                request.affected = [task.assigned_robot]
+            elif kind == CrisisKind.CHARGER_OUTAGE:
+                bay = self._outage_bay()
+                if bay is None:
+                    return False
+                request.coords = [bay]
+                details["charger"] = bay
+                request.affected = [r.id for r in self.robot_manager.robots
+                                    if r.status == RobotStatus.CHARGING and r.path and tuple(r.path[-1]) == bay]
+                if not request.affected:
+                    request.affected = [min(self.robot_manager.robots, key=lambda r:(r.battery,r.id)).id]
+                warehouse.grid[bay[1]][bay[0]] = "."
+                warehouse.revision += 1
+                for rid in request.affected:
+                    robot = self.robot_manager.get_robot(rid)
+                    if robot.status == RobotStatus.CHARGING:
+                        robot.path = self.charging_manager.get_charge_path(robot, self.pathfinder,
+                                             congestion=True, loaded=robot.carrying_item)
+            elif kind == CrisisKind.DEADLOCK and not self.deadlock_is_current(request.pair, request.episode_id):
+                return False
+        except ValueError:
+            return False  # Conditions changed while queued: no partial physical effect.
+        self._incidents.setdefault(request.crisis_id, {}).update(status="ACTIVE", crisis_kind=kind.value,
+                           affected=list(request.affected), crisis_location=list(request.coords))
+        self.events.emit("CRISIS_ACTIVATED", tag="CRISIS", step=self.current_step, crisis_id=request.crisis_id,
+                         crisis_kind=kind.value, affected=request.affected, crisis_location=request.coords)
+        if request.affected:
+            self._crises[request.crisis_id] = {"step": self.current_step, "remaining": set(request.affected)}
+        return True
+
+    def finish_crisis(self, request, dropped=False):
+        if not request.details.get("managed"):
+            return
+        record = self._incidents.setdefault(request.crisis_id, {})
+        if record.get("status") in ("COMPLETE", "STALE_DROPPED"):
+            return
+        if request.kind == CrisisKind.ROBOT_IMMOBILIZED:
+            robot = self.robot_manager.get_robot(request.details.get("robot_id"))
+            if robot:
+                robot.fault_reason = None
+        if request.kind == CrisisKind.CHARGER_OUTAGE and "charger" in request.details:
+            x,y = request.details["charger"]
+            self.pathfinder.warehouse.grid[y][x] = "C"
+            self.pathfinder.warehouse.revision += 1
+        record["status"] = "STALE_DROPPED" if dropped else "COMPLETE"
+        self.measurements["crises_completed"] += 1
+        self.events.emit("CRISIS_HANDLING_COMPLETE", tag="CRISIS", step=self.current_step,
+                         crisis_id=request.crisis_id, crisis_kind=request.kind.value, dropped=dropped,
+                         temporary_effects_restored=request.kind in (CrisisKind.ROBOT_IMMOBILIZED, CrisisKind.CHARGER_OUTAGE))
+
+    def _activate_collapse(self, coords=None):
+        with self.lock:
             warehouse = self.pathfinder.warehouse
             occupied = {(r.position.x, r.position.y) for r in self.robot_manager.robots}
             if coords is None:
@@ -597,20 +834,19 @@ class SimulationEngine:
                 if not candidates:
                     return None
                 self.rng.shuffle(candidates)
-                candidates.sort(key=lambda c: c not in central)
-                coords = next((c for c in candidates if self._collapse_preserves_access(c, occupied | protected)), None)
+                paths = [set(map(tuple, r.path + r.delivery_path)) for r in self.robot_manager.robots]
+                candidates.sort(key=lambda c: (-sum(bool(set(c) & p) for p in paths), c not in central))
+                coords = next((c for c in candidates if self._collapse_preserves_access(c, occupied | protected)
+                               and self._change_preserves_energy({cell:"S" for cell in c})), None)
                 if coords is None:
                     return None
             cells = set(map(tuple, coords))
-            if not cells or any(not warehouse.is_walkable(x, y) or (x,y) in occupied or warehouse.grid[y][x] == "C"
-                                for x, y in cells):
-                raise ValueError("Crisis cells must be walkable, unoccupied, and outside chargers")
+            self._validate_collapse(cells)
             affected = [r.id for r in self.robot_manager.robots
                         if any(tuple(p) in cells for p in r.path + r.delivery_path)]
             for x, y in cells:
                 warehouse.grid[y][x] = "S"
             warehouse.revision += 1
-            self.measurements["crisis_count"] += 1
             if self.agent_manager and self.agent_manager.message_bus:
                 from backend.agents.message_bus import MessageType
                 bus = self.agent_manager.message_bus
@@ -630,19 +866,4 @@ class SimulationEngine:
                     task = self.task_manager.get_task(robot.current_task)
                     robot.delivery_path = self.pathfinder.find_path(
                         (task.pickup_x, task.pickup_y), (task.delivery_x, task.delivery_y)) if task else []
-            crisis_id = None
-            if self.settings.orchestrator_enabled and affected:
-                crisis_id = self.orchestrator_runner.invoke_async(sorted(cells), affected)
-            if crisis_id is None:
-                crisis_id = f"{self.run_id}:baseline_crisis_{self.measurements['crisis_count']:04d}"
-                if affected:
-                    self.orchestrator_runner.executor.fallback(affected, "QUEUE_BACKPRESSURE" if self.settings.orchestrator_enabled
-                                                             else "ORCHESTRATOR_DISABLED", crisis_id=crisis_id)
-            self.events.emit("CRISIS_CREATED", step=self.current_step, crisis_id=crisis_id,
-                             crisis_location=sorted(cells), affected=affected)
-            if affected:
-                self._crises[crisis_id] = {"step": self.current_step, "remaining": set(affected)}
-            else:
-                self.measurements["crises_recovered"] += 1
-                self.events.emit("CRISIS_RECOVERED", step=self.current_step, crisis_id=crisis_id, recovery_steps=0)
-            return crisis_id
+            return sorted(cells), affected

@@ -99,6 +99,24 @@ def test_openrouter_rate_limit_is_unavailable_and_redacted(monkeypatch):
     assert str(caught.value) == "OpenRouter HTTP 429"
 
 
+def test_openrouter_unavailable_free_model_is_not_mislabeled_json(monkeypatch, engine_factory):
+    monkeypatch.setenv("LLM_Provider", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    def post(*args, **kwargs):
+        response = requests.Response()
+        response.status_code = 404
+        response._content = b'{"error":{"message":"This model is unavailable for free. test-key"}}'
+        return response
+    engine = engine_factory(OpenRouterClient(post))
+    engine.orchestrator_runner.invoke_async([], [1])
+    state = wait_for(engine, lambda s: not s["active"] and s["active_node"] == "complete")
+    assert state["error_code"] == "LLM_UNAVAILABLE"
+    assert state["failure_type"] == "LLM_PROVIDER_UNAVAILABLE"
+    assert state["http_status"] == 404
+    assert state["fallback_used"] and not engine.robot_manager.get_robot(1).orchestration_holds
+    assert "test-key" not in str(state) and "test-key" not in str(engine.events.query())
+
+
 def test_openrouter_timeout_releases_crisis_and_falls_back(monkeypatch, engine_factory):
     monkeypatch.setenv("LLM_Provider", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

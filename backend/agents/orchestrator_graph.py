@@ -19,6 +19,16 @@ from backend.core.events import logger
 
 
 class OrchestratorState(TypedDict, total=False):
+    llm_provider: str
+    model: str
+    llm_status: str
+    llm_latency_ms: float
+    http_status: int | None
+    failure_type: str | None
+    provider_error: str | None
+    finish_reason: str | None
+    inference_provider: str | None
+    transport_type: str | None
     run_id: str
     crisis_kind: str
     crisis_id: str
@@ -47,6 +57,9 @@ class OrchestratorState(TypedDict, total=False):
 class CrisisKind(str, Enum):
     DEADLOCK = "DEADLOCK"
     STRUCTURAL_COLLAPSE = "STRUCTURAL_COLLAPSE"
+    ROBOT_IMMOBILIZED = "ROBOT_IMMOBILIZED"
+    CHARGER_OUTAGE = "CHARGER_OUTAGE"
+    CRITICAL_TASK = "CRITICAL_TASK"
 
 
 @dataclass
@@ -58,6 +71,11 @@ class CrisisRequest:
     kind: CrisisKind = CrisisKind.STRUCTURAL_COLLAPSE
     pair: tuple[int, int] | None = None
     episode_id: int | None = None
+    details: dict = field(default_factory=dict)
+
+    @property
+    def blocked_cells(self):
+        return self.coords if self.kind == CrisisKind.STRUCTURAL_COLLAPSE else []
 
 
 @dataclass
@@ -108,6 +126,7 @@ class OrchestratorRunner:
             session = self._current
             state = deepcopy(session.state if session else self._last_state)
             return {"run_id": self.engine.run_id, "active": session is not None,
+                    "llm_provider": getattr(self.client, "provider", "injected"), "model": self.client.model,
                     "active_node": None, "crisis_id": None, "crisis_kind": None, "plan_id": None,
                     "crisis_location": [], "affected_robots": [], "proposed_plan": None,
                     "validation_score": None, "validation_status": "PENDING", "validation_issues": [],
@@ -139,12 +158,13 @@ class OrchestratorRunner:
             if self._is_stale(request):
                 self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE",
                             reason="DEADLOCK_ALREADY_RESOLVED")
+                self.engine.finish_crisis(request, dropped=True)
             else:
                 pending.append(request)
         self._queue = pending
 
     def invoke_async(self, crisis_coords, affected_robot_ids, kind=CrisisKind.STRUCTURAL_COLLAPSE,
-                     episode_id=None):
+                     episode_id=None, details=None):
         # All queue admission/activation uses simulation -> runner lock order.
         # Queued requests are metadata only: they NEVER pin robots.
         kind = {"deadlock": CrisisKind.DEADLOCK, "aisle_collapse": CrisisKind.STRUCTURAL_COLLAPSE}.get(kind, kind)
@@ -167,7 +187,7 @@ class OrchestratorRunner:
                 self._sequence += 1
                 request = CrisisRequest(f"{self.engine.run_id}:crisis_{self._sequence:04d}",
                                         sorted(set(map(tuple, crisis_coords))), affected,
-                                        self.engine.current_step, kind, pair, episode_id)
+                                        self.engine.current_step, kind, pair, episode_id, deepcopy(details or {}))
                 if self._is_stale(request):
                     self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE",
                                 reason="DEADLOCK_ALREADY_RESOLVED")
@@ -187,7 +207,18 @@ class OrchestratorRunner:
         # Revalidate at the head, under the same lock that installs active holds.
         if self._is_stale(request):
             self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE", reason="DEADLOCK_ALREADY_RESOLVED")
+            self.engine.finish_crisis(request, dropped=True)
             return False
+        if request.details.get("managed"):
+            try:
+                activated = self.engine.activate_crisis(request)
+            except Exception:
+                logger.exception("[ERROR] Crisis activation failed crisis_id=%s", request.crisis_id)
+                activated = False
+            if not activated:
+                self._event("STALE_DROPPED", request, tag="CRISIS_QUEUE", reason="INCIDENT_NO_LONGER_ELIGIBLE")
+                self.engine.finish_crisis(request, dropped=True)
+                return False
         state = dict(run_id=self.engine.run_id, crisis_id=request.crisis_id, crisis_kind=request.kind.value,
                      plan_id=None, crisis_location=request.coords, affected_robots=request.affected,
                      proposed_plan=None, validation_score=None, validation_status="PENDING",
@@ -204,6 +235,10 @@ class OrchestratorRunner:
                 if robot:
                     robot.orchestration_holds.add(request.crisis_id)
             self._event("ORCH_START", request, affected=request.affected, crisis_kind=request.kind.value)
+            if not request.affected:
+                self._event("LLM_SKIPPED", request, tag="LLM", reason="NO_AFFECTED_ROBOTS")
+                self._finish(session)
+                return True
             self._spawn(session, state)
         except Exception:
             logger.exception("[ERROR] Orchestrator startup failed crisis_id=%s", request.crisis_id)
@@ -245,12 +280,15 @@ class OrchestratorRunner:
                 continue
             task = world.tasks.get(r.current_task)
             robots.append(dict(robot_id=rid, position=[r.position.x,r.position.y], battery=r.battery,
+                fault=r.fault_reason,
                 carrying=r.carrying_item, task_id=r.current_task, destination=world.destination(r),
                 delivery=[task.delivery_x,task.delivery_y] if task else None,
                 next_cells=r.path[1:4],
                 adjacent_walkable=world.warehouse.get_neighbors(r.position.x,r.position.y)))
         feedback = [{"robot_id":i.get("robot_id"),"code":i["code"]} for i in state.get("validation_issues",[])][:12]
-        context = dict(kind=request.kind.value,crisis_cells=request.coords,robots=robots,
+        context = dict(kind=request.kind.value,crisis_cells=request.blocked_cells,robots=robots,
+                       incident_location=request.coords,
+                       incident={k:v for k,v in request.details.items() if k in ("robot_id", "task_id", "charger")},
                        feedback=feedback or {"code":state.get("error_code"),"message":(state.get("error") or "")[:200]},
                        rejected_strategies=state.get("rejected_strategies",[]))
         return ("Warehouse emergency. Return JSON only: {\"actions\":[{\"robot_id\":1,\"action\":\"HOLD\","
@@ -261,6 +299,7 @@ class OrchestratorRunner:
                 "Every action needs robot_id and reason. Coordinates are x,y. Never enter crisis cells. "
                 "A reroute must still reach destination with enough battery. YIELD stays stationary; "
                 "do not block the winner. Use short HOLD when a safe detour is unknown. "
+                "An immobilized robot cannot REROUTE or GO_TO_CHARGER; consider safe task reassignment. "
                 "Do not repeat a rejected strategy. " + json.dumps(context,separators=(",",":")))
 
     def _build_graph(self, session):
@@ -294,14 +333,24 @@ class OrchestratorRunner:
             session.expected_ownership = world.ownership_key(request.affected)
             prompt = self._plan_prompt(request, world, state)
             started = time.monotonic()
+            provider = getattr(self.client, "provider", "injected")
+            updates.update(llm_provider=provider, model=self.client.model, llm_status="REQUESTED",
+                           http_status=None, failure_type=None, provider_error=None, llm_latency_ms=None)
+            self._publish(session, **updates)
             self._event("LLM_REQUEST", request, tag="LLM", plan_id=plan_id, model=self.client.model,
-                        attempt=attempts + 1, graph_node="generate_plan", prompt_chars=len(prompt))
+                        provider=provider, attempt=attempts + 1, graph_node="generate_plan", prompt_chars=len(prompt))
             try:
                 raw = self.client.generate(prompt, generation_schema())
+                telemetry = getattr(self.client, "last_response", {})
+                latency = round((time.monotonic()-started)*1000, 2)
+                updates.update(llm_status="RECEIVED", llm_latency_ms=latency, **telemetry)
+                self._event("LLM_RESPONSE_RECEIVED", request, tag="LLM", plan_id=plan_id,
+                            model=self.client.model, provider=provider, latency_ms=latency, **telemetry)
                 plan = parse_plan(raw)
+                updates["llm_status"] = "PARSED"
                 session.expected_ownership = world.ownership_key([a.robot_id for a in plan.actions])
                 self._event("LLM_SUCCESS", request, tag="LLM", plan_id=plan_id, model=self.client.model,
-                            latency_ms=round((time.monotonic()-started)*1000, 2), actions=len(plan.actions))
+                            provider=provider, latency_ms=latency, actions=len(plan.actions), **telemetry)
                 if plan.strategy_key() in state.get("rejected_strategies", []):
                     self._event("INVALID_PLAN", request, tag="VALIDATOR", plan_id=plan_id, codes=["REJECTED_STRATEGY"])
                     updates.update(error_code="REJECTED_STRATEGY", error="Model repeated a rejected strategy",
@@ -310,16 +359,23 @@ class OrchestratorRunner:
                     updates["proposed_plan"] = plan.model_dump(mode="json")
                     self._event("PLAN_PARSED", request, tag="PLAN", plan_id=plan_id, actions=len(plan.actions))
             except PlanError as error:
+                telemetry = {**getattr(self.client, "last_response", {}), **error.details}
+                updates.update(llm_status="FAILED", llm_latency_ms=round((time.monotonic()-started)*1000, 2),
+                               **telemetry)
                 updates.update(error_code=error.code, error=str(error), validation_status="INVALID")
                 if error.code in ("LLM_INVALID_JSON", "LLM_SCHEMA_ERROR"):
+                    self._event("LLM_PARSE_ERROR", request, tag="LLM", plan_id=plan_id,
+                                provider=provider, model=self.client.model, error_code=error.code,
+                                reason=str(error), **telemetry)
                     self._event("INVALID_PLAN", request, tag="VALIDATOR", plan_id=plan_id,
                                 codes=[error.code], reason=str(error))
                 self._event("LLM_FAILURE", request, tag="LLM", plan_id=plan_id, model=self.client.model,
-                            error_code=error.code, reason=str(error),
+                            provider=provider, error_code=error.code, reason=str(error), **telemetry,
                             latency_ms=round((time.monotonic()-started)*1000, 2))
             except Exception:
                 logger.exception("[LLM][ERROR] Unexpected inference failure crisis_id=%s", request.crisis_id)
-                updates.update(error_code="LLM_INTERNAL_ERROR", error="Unexpected inference failure", validation_status="INVALID")
+                updates.update(error_code="LLM_INTERNAL_ERROR", error="Unexpected inference failure", validation_status="INVALID",
+                               llm_status="FAILED", llm_latency_ms=round((time.monotonic()-started)*1000, 2))
                 self._event("LLM_FAILURE", request, tag="LLM", plan_id=plan_id, model=self.client.model,
                             error_code="LLM_INTERNAL_ERROR", latency_ms=round((time.monotonic()-started)*1000, 2))
             self._publish(session, **updates)
@@ -339,7 +395,7 @@ class OrchestratorRunner:
         def validate(state):
             self._publish(session, active_node="validate")
             plan = CrisisPlan.model_validate(state["proposed_plan"])
-            report = self.validator.validate(plan, self._snapshot(session), request.coords, request.affected)
+            report = self.validator.validate(plan, self._snapshot(session), request.blocked_cells, request.affected)
             auto = (report.valid and not report.requires_human and
                     report.validation_score >= self.engine.settings.auto_execute_threshold)
             updates = dict(active_node="validate", validation_status="VALID" if report.valid else "INVALID",
@@ -367,7 +423,7 @@ class OrchestratorRunner:
                 plan = CrisisPlan.model_validate(state["proposed_plan"])
                 with self.engine.lock:
                     self._snapshot(session)
-                    self.executor.execute(plan, request.coords, request.affected,
+                    self.executor.execute(plan, request.blocked_cells, request.affected,
                                           human_approved=state.get("approval_source") == "human" and state.get("human_approved") is True,
                                           expected_ownership=session.expected_ownership,
                                           expected_issues=state.get("validation_issues"),
@@ -447,7 +503,8 @@ class OrchestratorRunner:
                 if self.engine.closed or self._current is not session:
                     return
             self.executor.fallback(session.request.affected, reason,
-                                   crisis_id=session.request.crisis_id, **trace)
+                                   crisis_id=session.request.crisis_id,
+                                   crisis_kind=session.request.kind.value, **trace)
 
     def _emergency_hold(self, session):
         with self.engine.lock:
@@ -507,6 +564,7 @@ class OrchestratorRunner:
                 if self._current is not session:
                     return
                 try:
+                    self.engine.finish_crisis(session.request)
                     if session.timer:
                         session.timer.cancel()
                     if session.state.get("fallback_used"):
@@ -538,6 +596,8 @@ class OrchestratorRunner:
                 if self._current or self._queue:
                     self.engine.events.emit("ORCH_CANCELLED", reason="SIMULATION_RESET",
                                             cancelled_crises=len(self._queue) + int(self._current is not None))
+                for request in ([self._current.request] if self._current else []) + list(self._queue):
+                    self.engine.finish_crisis(request, dropped=True)
                 self._current = None
                 self._queue.clear()
                 self.engine._deadlock_pairs.clear()

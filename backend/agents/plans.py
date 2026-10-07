@@ -64,8 +64,9 @@ class CrisisPlan(BaseModel):
 
 
 class PlanError(ValueError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, **details):
         self.code = code
+        self.details = details
         super().__init__(message)
 
 

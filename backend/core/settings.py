@@ -19,10 +19,15 @@ class Settings(BaseModel):
     shadow_horizon: int = Field(default=5, ge=1, le=10)
     event_history_limit: int = Field(default=2000, ge=100, le=100000)
     crisis_interval: int = Field(default=200, ge=0)
-    automatic_crisis_limit: int = Field(default=3, ge=0)
+    automatic_crisis_limit: int = Field(default=6, ge=0)  # Legacy configuration alias.
+    crisis_budget: int | None = Field(default=None, ge=0, le=100)
     # Wall-clock operator timeout prevents a forgotten HITL session blocking the queue.
     hitl_timeout_seconds: float = Field(default=300, gt=0)
     battery_margin: int = Field(default=5, ge=0, le=20)
+
+    @property
+    def effective_crisis_budget(self):
+        return self.automatic_crisis_limit if self.crisis_budget is None else self.crisis_budget
 
     @classmethod
     def from_env(cls):
@@ -39,6 +44,7 @@ class Settings(BaseModel):
             "event_history_limit": "EVENT_HISTORY_LIMIT",
             "crisis_interval": "CRISIS_INTERVAL",
             "automatic_crisis_limit": "AUTOMATIC_CRISIS_LIMIT",
+            "crisis_budget": "CRISIS_BUDGET",
             "hitl_timeout_seconds": "ORCHESTRATOR_HITL_TIMEOUT_SECONDS",
         }
         return cls(**{field: os.environ[name] for field, name in names.items() if name in os.environ})

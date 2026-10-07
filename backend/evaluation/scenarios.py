@@ -23,6 +23,10 @@ class ScenarioSchedule:
         rng = Random(engine.seed + 10000)
         candidates = [[(x+i, y) for i in range(3)] for y in range(10, 21) for x in range(5, 43)
                       if all(warehouse.grid[y][x+i] == "." for i in range(3))]
+        protected = {(t.pickup_x,t.pickup_y) for t in engine.task_manager.tasks}
+        protected |= {(t.delivery_x,t.delivery_y) for t in engine.task_manager.tasks}
+        self.candidates = [c for c in candidates if not set(c) & protected]
+        rng.shuffle(self.candidates)
         if candidates:
             self.requested_cells = rng.choice(candidates)
         if self.scenario == Scenario.BATTERY_STRESS:
@@ -36,6 +40,19 @@ class ScenarioSchedule:
         if engine.current_step + 1 != self.inject_step:
             return
         if self.scenario in (Scenario.AISLE_COLLAPSE, Scenario.LLM_OFFLINE, Scenario.LLM_MALFORMED_RESPONSE):
+            # Pick a real active route, with the same seeded candidate order across
+            # modes. A cosmetic collapse that affects nobody should not test LLM failure.
+            routes = set(tuple(cell) for r in engine.robot_manager.robots for cell in r.path+r.delivery_path)
+            self.requested_cells = None
+            for cells in self.candidates:
+                if not routes & set(cells):
+                    continue
+                try:
+                    engine._validate_collapse(set(cells))
+                except ValueError:
+                    continue
+                self.requested_cells = cells
+                break
             if self.requested_cells:
                 try:
                     engine.trigger_warehouse_crisis(self.requested_cells)

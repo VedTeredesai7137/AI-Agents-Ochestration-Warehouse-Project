@@ -29,5 +29,5 @@ def get_llm_model() -> str:
     """Return the model identifier used for inference and operational logs."""
     provider = get_llm_provider()
     if provider == "openrouter":
-        return os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b:free").strip()
+        return os.getenv("OPENROUTER_MODEL", "").strip()
     return _PROVIDER_MODELS.get(provider, provider)

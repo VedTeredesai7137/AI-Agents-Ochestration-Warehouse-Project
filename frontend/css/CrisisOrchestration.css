@@ -12,6 +12,7 @@ h1,h2,h3,p {margin:0} h1 {font-size:15px;letter-spacing:.1em;font-weight:650}
 h2,h3 {font-size:12px;letter-spacing:.07em;font-weight:600} h3 {color:var(--secondary)}
 .mono,.run-meta,.system-state,.kpi strong,.status-label,.pipeline,.trace-row,dl {font-family:var(--mono);font-variant-numeric:tabular-nums}
 .muted {color:var(--muted)} .violet {color:var(--violet)}
+.timeline-tools {flex-wrap:wrap} .timeline-tools select {max-width:100%;min-width:0} #budget-summary {width:100%;font:10px var(--mono);line-height:1.6}
 button,select {font:inherit;background:var(--raised);color:var(--secondary);border:1px solid var(--divider);border-radius:3px;min-height:32px;padding:4px 12px;cursor:pointer}
 button:hover:not(:disabled),select:hover {background:var(--hover);border-color:var(--edge);color:var(--ink)}
 button:disabled {color:var(--disabled);cursor:default} button.primary {color:var(--cyan);border-color:#36545c} button.danger {color:var(--red);border-color:#573139}
