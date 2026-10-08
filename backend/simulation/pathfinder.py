@@ -1,5 +1,7 @@
 import heapq
 
+from backend.core.events import logger
+
 
 class AStarPathfinder:
 
@@ -39,11 +41,8 @@ class AStarPathfinder:
 
         for i, (x, y) in enumerate(path):
             if not self.warehouse.is_walkable(x, y):
-                print(
-                    f"[PATHFINDER ERROR] Path integrity failed: "
-                    f"cell ({x},{y}) at index {i} is NOT walkable. "
-                    f"Path rejected. Full path: {path}"
-                )
+                logger.error("[PATHFINDER ERROR] Path integrity failed: cell (%s,%s) at index %s is NOT walkable. Path rejected. Full path: %s",
+                             x, y, i, path)
                 return []
 
         # Verify orthogonal adjacency between consecutive cells
@@ -53,11 +52,8 @@ class AStarPathfinder:
             dx = abs(cx - px)
             dy = abs(cy - py)
             if (dx + dy) != 1:
-                print(
-                    f"[PATHFINDER ERROR] Path integrity failed: "
-                    f"non-adjacent step from ({px},{py}) to ({cx},{cy}) "
-                    f"at index {i}. Distance={dx+dy}. Path rejected."
-                )
+                logger.error("[PATHFINDER ERROR] Path integrity failed: non-adjacent step from (%s,%s) to (%s,%s) at index %s. Distance=%s. Path rejected.",
+                             px, py, cx, cy, i, dx + dy)
                 return []
 
         return path
@@ -73,17 +69,11 @@ class AStarPathfinder:
             return []
         # Pre-validate start and goal are walkable
         if not self.warehouse.is_walkable(start[0], start[1]):
-            print(
-                f"[PATHFINDER ERROR] Start cell ({start[0]},{start[1]}) "
-                f"is NOT walkable. Returning empty path."
-            )
+            logger.error("[PATHFINDER ERROR] Start cell (%s,%s) is NOT walkable. Returning empty path.", *start)
             return []
 
         if not self.warehouse.is_walkable(goal[0], goal[1]):
-            print(
-                f"[PATHFINDER ERROR] Goal cell ({goal[0]},{goal[1]}) "
-                f"is NOT walkable. Returning empty path."
-            )
+            logger.error("[PATHFINDER ERROR] Goal cell (%s,%s) is NOT walkable. Returning empty path.", *goal)
             return []
 
         # Trivial case: start == goal
@@ -175,8 +165,5 @@ class AStarPathfinder:
                         )
                     )
 
-        print(
-            f"[PATHFINDER WARNING] No path found from "
-            f"{start} to {goal}."
-        )
+        logger.warning("[PATHFINDER WARNING] No path found from %s to %s.", start, goal)
         return []

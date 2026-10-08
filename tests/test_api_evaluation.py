@@ -19,9 +19,9 @@ def client():
         api.simulation.close()
 
 
-@pytest.mark.parametrize("endpoint", ["/", "/dashboard", "/OperationCentre", "/OperationCenter", "/SystemOverview", "/robots", "/tasks", "/warehouse/grid",
+@pytest.mark.parametrize("endpoint", ["/", "/dashboard", "/OperationCentre", "/OperationCenter", "/SystemOverview", "/DeveloperCentre", "/robots", "/tasks", "/warehouse/grid",
     "/agents/status", "/agents/messages", "/agents/message-history", "/tasks/agents", "/auction/logs",
-    "/negotiation/logs", "/simulation/status", "/orchestrator/state", "/orchestrator/events"])
+    "/negotiation/logs", "/simulation/status", "/orchestrator/state", "/orchestrator/events", "/developer/logs"])
 def test_endpoints_healthy(client,endpoint):
     response=client.get(endpoint)
     assert response.status_code==200

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Developer Console | Warehouse Swarm</title>
+ <link rel="stylesheet" href="{{ url_for('static', path='css/DeveloperCentre.css') }}?v=1">
+</head>
+<body>
+ <header class="command-header">
+  <div class="app-name">SwarmOS</div>
+  <nav aria-label="Operations pages">
+   <a href="/OperationCenter"><span class="nav-index">01</span><span class="nav-label">Operations</span></a>
+   <a href="/CrisisOrchestration"><span class="nav-index">02</span><span class="nav-label">Crisis</span></a>
+   <a href="/AgentAnalytics"><span class="nav-index">03</span><span class="nav-label">Analytics</span></a>
+   <a href="/dashboard"><span class="nav-index">04</span><span class="nav-label">Dashboard</span></a>
+   <a href="/SystemOverview"><span class="nav-index">05</span><span class="nav-label">Overview</span></a>
+   <a href="/DeveloperCentre" aria-current="page"><span class="nav-index">06</span><span class="nav-label">Developer</span></a>
+  </nav>
+  <span class="header-spacer" aria-hidden="true"></span>
+ </header>
+
+ <div class="command-row">
+  <div class="header-meta">
+   <div class="run-meta">
+    <span>RUN <b id="run-id">—</b></span>
+    <span>MODEL <b id="model-name">Loading</b></span>
+    <span>SEED <b id="seed">—</b></span>
+    <span>STEP <b id="step">—</b></span>
+   </div>
+   <div class="system-state"><strong id="simulation-state">CONNECTING</strong><span id="api-state" role="status">API CONNECTING</span></div>
+  </div>
+  <div class="stream-meta"><span>APPLICATION LOGGER</span><span>INFO +</span><span>100,000 / RUN</span></div>
+ </div>
+
+ <main class="developer-workspace">
+  <section class="console-panel" aria-labelledby="console-title">
+   <header class="console-heading">
+    <div class="title-line"><h1 id="console-title"><span>06 /</span> DEVELOPER CONSOLE</h1><span id="freshness" class="freshness">WAITING FOR LOGS</span></div>
+    <div class="console-tools">
+     <label class="search-label"><span>SEARCH</span><input id="search" type="search" placeholder="Message, robot, task, error code…" autocomplete="off"></label>
+     <label class="category-label"><span>SOURCE</span><select id="category-filter" aria-label="Filter log category"><option value="ALL">ALL</option><option>SIM</option><option>ROBOT</option><option>CNP</option><option>CHARGING</option><option>PATHFINDER</option><option>CRISIS</option><option>LLM</option><option>ORCH</option><option>API</option><option>FALLBACK</option></select></label>
+     <div class="level-filters" role="group" aria-label="Filter by severity">
+      <button type="button" data-level="ALL" aria-pressed="true">ALL</button>
+      <button type="button" data-level="ERROR" aria-pressed="false">ERROR</button>
+      <button type="button" data-level="WARNING" aria-pressed="false">WARN</button>
+      <button type="button" data-level="INFO" aria-pressed="false">INFO</button>
+      <button type="button" data-level="DEBUG" aria-pressed="false">DEBUG</button>
+     </div>
+     <button type="button" id="load-earlier" class="quiet-button" hidden>LOAD EARLIER</button>
+     <button type="button" id="follow" class="follow-button" aria-pressed="true">LIVE FOLLOW</button>
+     <button type="button" id="copy-all" class="quiet-button">COPY ALL LOGS</button>
+     <button type="button" id="export" class="quiet-button">EXPORT VIEW</button>
+    </div>
+   </header>
+
+   <div class="summary-strip" aria-label="Loaded log summary">
+    <div><span>LOADED</span><strong id="count-loaded">0</strong></div>
+    <div data-tone="error"><span>ERRORS</span><strong id="count-errors">0</strong></div>
+    <div data-tone="warning"><span>WARNINGS</span><strong id="count-warnings">0</strong></div>
+    <div><span>VISIBLE</span><strong id="count-visible">0</strong></div>
+    <div class="summary-note" id="buffer-note">Complete current-run history retained up to 100,000 records. Newest records load first.</div>
+   </div>
+
+   <div class="console-layout">
+    <section class="log-view" aria-label="Application console records">
+     <div class="log-column-head" aria-hidden="true"><span>TIME</span><span>LEVEL</span><span>ORIGIN</span><span>MESSAGE</span></div>
+     <div id="log-list" class="log-list" role="log" aria-live="off" aria-relevant="additions text" tabindex="0">
+      <div class="empty-state"><strong>CONNECTING TO BACKEND LOG STREAM</strong><p>Application messages will appear here as the simulation and orchestrator run.</p></div>
+     </div>
+     <div id="stream-error" class="stream-error" role="status" hidden></div>
+    </section>
+
+    <aside class="inspector" aria-label="Selected console record">
+     <div class="inspector-heading"><h2>RECORD INSPECTOR</h2><span id="selected-level" class="level-badge">—</span></div>
+     <div id="record-detail" class="record-detail">
+      <div class="empty-state"><strong>NO RECORD SELECTED</strong><p>Select a console line to inspect its timestamp, source location, and full message.</p></div>
+     </div>
+     <div class="source-note">
+      <h3>CAPTURE SCOPE</h3>
+      <p>Captures INFO and higher from the application <code>warehouse</code> logger, plus successful per-cell robot moves at DEBUG. It includes CNP proposals/awards, task lifecycle, charging, crisis, LangGraph, LLM, validation, HITL, executor, and fallback events.</p>
+      <p>History retains up to 100,000 records for the current simulation run. Reset starts a fresh log so the run can be reviewed from boot through completion.</p>
+     </div>
+    </aside>
+   </div>
+  </section>
+ </main>
+
+ <footer><span>SWARMOS / DEVELOPER CONSOLE</span><span id="footer-freshness">Awaiting backend connection</span><span>PROCESS MEMORY · READ ONLY</span></footer>
+ <script src="{{ url_for('static', path='js/DeveloperCentre.js') }}?v=1"></script>
+</body>
+</html>

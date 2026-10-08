@@ -180,6 +180,8 @@ class RobotAgent:
         estimated_cost = offer if offer is not None else distance + battery_penalty
 
         # Submit proposal
+        logger.info("[CNP][PROPOSAL] robot_id=%s task_id=%s bid=%.2f battery=%.0f distance=%s",
+                    robot.id, task_id, estimated_cost, robot.battery, distance)
         self.send_message(
             recipient=msg.sender,
             message_type=MessageType.PROPOSAL,
@@ -470,7 +472,7 @@ class RobotAgent:
         """Increment battery while sitting at charger."""
         robot = self.robot
         if not ctx["charging_manager"].at_station(robot, ctx["warehouse"]):
-            print(f"[CHARGE ERROR] Robot {robot.id}: cannot charge away from a station.")
+            logger.error("[CHARGE ERROR] robot_id=%s cannot charge away from a station", robot.id)
             return
         robot.battery = min(100, max(0, robot.battery) + ctx["charging_manager"].CHARGE_RATE)
         if robot.battery >= 100:

@@ -28,6 +28,7 @@ from backend.agents.task_orchestrator import TaskAgentManager
 from backend.agents.negotiation import NegotiationService
 from backend.simulation.factory import create_simulation
 from backend.core.settings import Settings
+from backend.core.events import console_history
 from backend.agents.orchestrator_graph import CrisisKind
 import logging
 
@@ -48,7 +49,8 @@ class HealthLogFilter(logging.Filter):
             "/orchestrator/state",
             "/robots",
             "/agents/messages",
-            "/tasks/agents"
+            "/tasks/agents",
+            "/developer/logs"
         ]
         if any(path in msg for path in health_paths):
             now = time.time()
@@ -195,6 +197,12 @@ def system_overview(request: Request):
     return templates.TemplateResponse(request=request, name="SystemOverview.html")
 
 
+@app.get("/DeveloperCentre")
+def developer_centre(request: Request):
+    """Serve the read-only application console and diagnostic feed."""
+    return templates.TemplateResponse(request=request, name="DeveloperCentre.html")
+
+
 @app.get("/warehouse/grid")
 @snapshot_response
 def get_warehouse_grid():
@@ -281,10 +289,14 @@ def post_simulation_step():
 
     with simulation_lock:
         simulation.step()
+        step = simulation.current_step
+        run_id = simulation.run_id
+
+    logging.getLogger("warehouse").info("[SIM][STEP] run_id=%s step=%s source=operator", run_id, step)
 
     return {
         "success": True,
-        "current_step": simulation.current_step
+        "current_step": step
     }
 
 
@@ -309,6 +321,13 @@ def post_create_task(request: TaskCreateRequest):
 
         # Create a TaskAgent for the new task
         task_agent_manager.create_agent_for_task(new_task_id)
+        task = task_manager.get_task(new_task_id)
+        run_id = simulation.run_id
+
+    logging.getLogger("warehouse").info(
+        "[CNP][TASK_CREATED] run_id=%s task_id=%s priority=%s pickup=(%s,%s) delivery=(%s,%s)",
+        run_id, new_task_id, task.priority, task.pickup_x, task.pickup_y, task.delivery_x, task.delivery_y,
+    )
 
     return {
         "success": True,
@@ -350,9 +369,11 @@ def post_simulation_reset(request: ResetRequest | None = None):
             settings = old.settings
             if request and request.orchestrator_enabled is not None:
                 settings = settings.model_copy(update={"orchestrator_enabled": request.orchestrator_enabled})
+            console_history.clear()
             (warehouse, robot_manager, task_manager, pathfinder, collision_manager,
              charging_manager, agent_manager, message_bus, task_agent_manager,
              negotiation_service, simulation) = initialize_simulation(selected_seed, settings)
+            logging.getLogger("warehouse").info("[SIM][RESET] run_id=%s seed=%s", simulation.run_id, selected_seed)
         if simulation_thread is not None:
             simulation_thread.join(timeout=2.0)
             simulation_thread = None
@@ -382,6 +403,7 @@ def post_simulation_start():
             loop_stop = threading.Event()
             simulation_running = True
             simulation_thread = threading.Thread(target=simulation_loop, args=(loop_stop, simulation), daemon=True)
+            logging.getLogger("warehouse").info("[SIM][START] run_id=%s step=%s", simulation.run_id, simulation.current_step)
             simulation_thread.start()
     return {"success": True, "message": "Simulation started"}
 
@@ -400,6 +422,7 @@ def post_simulation_pause():
         if simulation_thread is not None:
             simulation_thread.join(timeout=2.0)
             simulation_thread = None
+        logging.getLogger("warehouse").info("[SIM][PAUSE] run_id=%s step=%s", simulation.run_id, simulation.current_step)
     return {"success": True, "message": "Simulation paused"}
 
 
@@ -559,6 +582,14 @@ def get_events(event_type: str | None = None, robot_id: int | None = None,
                crisis_id: str | None = None, limit: int = Query(default=100, ge=1, le=2000)):
     return {"run_id": simulation.run_id, "events": simulation.events.query(
         limit=limit, event_type=event_type, robot_id=robot_id, crisis_id=crisis_id)}
+
+
+@app.get("/developer/logs")
+def get_developer_logs(after_id: int | None = Query(default=None, ge=0),
+                       before_id: int | None = Query(default=None, ge=1),
+                       limit: int = Query(default=500, ge=1, le=100000)):
+    """Read bounded application logs without exposing tracebacks or credentials."""
+    return console_history.query(after_id=after_id, before_id=before_id, limit=limit)
 
 
 @app.exception_handler(Exception)

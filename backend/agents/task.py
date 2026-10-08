@@ -102,8 +102,9 @@ class TaskAgent:
         """Broadcast a Call For Proposals to all robot agents."""
         is_emergency = self.task.priority == "CRITICAL"
         msg_type = MessageType.EMERGENCY_CFP if is_emergency else MessageType.CFP
-        if is_emergency:
-            logger.info("[CNP][EMERGENCY] task_id=%s issuing critical CFP", self.task.id)
+        logger.info("[CNP][CFP] task_id=%s type=%s pickup=(%s,%s) delivery=(%s,%s)",
+                    self.task.id, "EMERGENCY" if is_emergency else "NORMAL",
+                    self.task.pickup_x, self.task.pickup_y, self.task.delivery_x, self.task.delivery_y)
         msg = self.message_bus.create_message(
             sender=self.agent_id,
             recipient="ALL",
@@ -198,7 +199,9 @@ class TaskAgent:
         )
         self.message_bus.publish(award_msg)
 
-        logger.debug("[CNP] task_id=%s awarded robot_id=%s", self.task.id, winner_id)
+        logger.info("[CNP][AWARD] task_id=%s robot_id=%s proposals=%s bid=%.2f",
+                    self.task.id, winner_id, len(self.received_proposals),
+                    next(p["estimated_cost"] for p in self.received_proposals if p["robot_id"] == winner_id))
         
         log = {
             "task_id": self.task.id,

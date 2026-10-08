@@ -43,7 +43,7 @@ def create_simulation(seed=None, settings=None, llm_client=None, lock=None, task
     negotiation = NegotiationService()
     engine = SimulationEngine(robots, collision, tasks, charging, pathfinder, agents, task_agents, negotiation,
                               settings=settings, seed=seed, rng=rng, lock=lock, llm_client=llm_client)
-    configure_logging()
+    configure_logging(run_id=engine.run_id)
     logger.info("[BOOT] Warehouse Swarm backend starting run_id=%s seed=%s llm_provider=%s model=%s "
                 "orchestrator_enabled=%s validator_enabled=true max_regenerations=%s auto_execute_threshold=%s",
                 engine.run_id, seed, get_llm_provider(), get_llm_model(), settings.orchestrator_enabled,

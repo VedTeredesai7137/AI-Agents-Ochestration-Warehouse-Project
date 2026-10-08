@@ -161,9 +161,7 @@ class SimulationEngine:
             )
             robot.delivery_path = delivery_path
 
-            print(
-                f"Task {task.id} assigned to Robot {winner}"
-            )
+            logger.debug("[CNP] task_id=%s robot_id=%s legacy assignment", task.id, winner)
 
     # ------------------------------------------------------------------
     # Legacy handle_battery — kept for backward compatibility when
@@ -184,10 +182,7 @@ class SimulationEngine:
                 robot.current_task
             )
 
-            print(
-                f"Robot {robot.id} released Task "
-                f"{robot.current_task}"
-            )
+            logger.info("[CNP] robot_id=%s released task_id=%s for charging", robot.id, robot.current_task)
 
         robot.path = self.charging_manager.get_charge_path(robot, self.pathfinder)
         robot.carrying_item = False
@@ -196,15 +191,13 @@ class SimulationEngine:
             robot.path = []
             robot.current_task = None
             robot.status = RobotStatus.NEEDS_CHARGE
-            print(f"[CHARGE ERROR] Robot {robot.id}: cannot reach a charger.")
+            logger.error("[CHARGE ERROR] robot_id=%s cannot reach a charger", robot.id)
             return
 
         robot.current_task = None
         robot.status = RobotStatus.CHARGING
 
-        print(
-            f"Robot {robot.id} going to charge"
-        )
+        logger.info("[CHARGING] robot_id=%s heading to charger", robot.id)
 
     # ------------------------------------------------------------------
     # STEP — main simulation tick
@@ -328,9 +321,7 @@ class SimulationEngine:
                         robot.battery = 100
                         robot.status = RobotStatus.IDLE
 
-                        print(
-                            f"Robot {robot.id} fully charged"
-                        )
+                        logger.info("[CHARGING] robot_id=%s fully charged", robot.id)
 
                 continue
 
@@ -355,18 +346,14 @@ class SimulationEngine:
 
             robot.battery = max(0, robot.battery - 1)
 
-            print(
-                f"Robot {robot.id} -> ({next_x},{next_y}) "
-                f"Battery={robot.battery:.0f}"
-            )
+            logger.debug("[ROBOT][MOVE] robot_id=%s position=(%s,%s) battery=%.0f status=%s",
+                        robot.id, next_x, next_y, robot.battery, robot.status.value)
 
             if len(robot.path) == 1:
 
                 if robot.status == RobotStatus.CHARGING:
 
-                    print(
-                        f"Robot {robot.id} arrived at charger"
-                    )
+                    logger.info("[CHARGING] robot_id=%s arrived at charger", robot.id)
 
                 elif robot.current_task is not None:
 
@@ -386,18 +373,11 @@ class SimulationEngine:
                             RobotStatus.DELIVERING
                         )
 
-                        print(
-                            f"Robot {robot.id} "
-                            f"picked item"
-                        )
+                        logger.info("[TASK] robot_id=%s picked task_id=%s", robot.id, robot.current_task)
 
                     else:
 
-                        print(
-                            f"Robot {robot.id} "
-                            f"delivered Task "
-                            f"{robot.current_task}"
-                        )
+                        logger.info("[TASK] robot_id=%s delivered task_id=%s", robot.id, robot.current_task)
 
                         self.task_manager.complete_task(
                             robot.current_task
